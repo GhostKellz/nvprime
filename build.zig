@@ -9,11 +9,50 @@ pub fn build(b: *std.Build) void {
     // Option to build with DRM/wlroots for compositor
     const use_drm = b.option(bool, "drm", "Link against libdrm for compositor") orelse false;
 
+    // Fetch external dependencies
+    const nvvk_dep = b.dependency("nvvk", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nvhud_dep = b.dependency("nvhud", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nvlatency_dep = b.dependency("nvlatency", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nvsync_dep = b.dependency("nvsync", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nvshader_dep = b.dependency("nvshader", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zeus_dep = b.dependency("zeus", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const ghostvk_dep = b.dependency("ghostVK", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create the nvprime module
     const mod = b.addModule("nvprime", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "nvvk", .module = nvvk_dep.module("nvvk") },
+            .{ .name = "nvhud", .module = nvhud_dep.module("nvhud") },
+            .{ .name = "nvlatency", .module = nvlatency_dep.module("nvlatency") },
+            .{ .name = "nvsync", .module = nvsync_dep.module("nvsync") },
+            .{ .name = "nvshader", .module = nvshader_dep.module("nvshader") },
+            .{ .name = "zeus", .module = zeus_dep.module("zeus") },
+            .{ .name = "ghostvk", .module = ghostvk_dep.module("ghostVK") },
+        },
     });
 
     // Link NVML to module (libc required for NVML's internal dependencies)

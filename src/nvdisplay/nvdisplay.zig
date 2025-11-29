@@ -2,14 +2,26 @@
 //!
 //! G-Sync, HDR, VRR, and multi-monitor orchestration.
 //! This is the display management core of NVPrime.
+//!
+//! Integrates with nvsync for actual DRM-based VRR control and display scanning.
 
 const std = @import("std");
 const nvml = @import("../bindings/nvml.zig");
 
+// Internal submodules
 pub const gsync = @import("gsync.zig");
 pub const hdr = @import("hdr.zig");
 pub const vrr = @import("vrr.zig");
 pub const multimon = @import("multimon.zig");
+
+// Re-export nvsync for DRM-based display management
+pub const nvsync = @import("nvsync");
+
+// Re-export key nvsync types for convenience
+pub const DisplayManager = nvsync.DisplayManager;
+pub const VrrMode = nvsync.VrrMode;
+pub const FrameLimiter = nvsync.FrameLimiter;
+pub const SystemStatus = nvsync.SystemStatus;
 
 /// Display connection type
 pub const ConnectionType = enum {
@@ -129,22 +141,66 @@ pub const DisplayState = struct {
     }
 };
 
-/// Get current display state
-/// Note: This requires querying X11/Wayland, not just NVML
-pub fn getState() !DisplayState {
-    // TODO: Implement via:
-    // - xrandr / libdrm for X11
-    // - wlr-output-management for Wayland
-    // - nvidia-settings for NVIDIA-specific features
+/// Get current display state using nvsync DRM scanning
+pub fn getState(allocator: std.mem.Allocator) !DisplayState {
+    var manager = nvsync.DisplayManager.init(allocator);
+    defer manager.deinit();
 
-    const state = DisplayState{
+    try manager.scan();
+
+    var state = DisplayState{
         .displays = undefined,
         .display_count = 0,
         .primary_display = 0,
     };
 
-    // Placeholder - would need actual display enumeration
+    // Convert nvsync displays to nvdisplay format
+    for (manager.displays.items, 0..) |display, i| {
+        if (i >= state.displays.len) break;
+
+        var info = DisplayInfo{
+            .name = [_]u8{0} ** 32,
+            .manufacturer = [_]u8{0} ** 16,
+            .model = [_]u8{0} ** 64,
+            .serial = [_]u8{0} ** 32,
+            .connection = switch (display.connection_type) {
+                .displayport => .displayport,
+                .hdmi => .hdmi,
+                .dvi => .dvi,
+                .vga => .vga,
+                .internal => .internal,
+                .unknown => .unknown,
+            },
+            .native_width = display.width,
+            .native_height = display.height,
+            .current_width = display.width,
+            .current_height = display.height,
+            .current_refresh_hz = display.current_hz,
+            .max_refresh_hz = display.max_hz,
+            .min_vrr_hz = display.min_hz,
+            .max_vrr_hz = display.max_hz,
+            .supports_gsync = display.gsync_capable,
+            .supports_gsync_compatible = display.gsync_compatible,
+            .supports_vrr = display.vrr_capable,
+            .supports_hdr = false, // TODO: Query HDR capability
+            .hdr_active = false,
+            .vrr_active = display.vrr_enabled,
+        };
+
+        // Copy name
+        const name_len = @min(display.name.len, info.name.len - 1);
+        @memcpy(info.name[0..name_len], display.name[0..name_len]);
+
+        state.displays[i] = info;
+        state.display_count += 1;
+    }
+
     return state;
+}
+
+/// Get system VRR status summary via nvsync
+pub fn getSystemStatus(allocator: std.mem.Allocator) !SystemStatus {
+    return try nvsync.getSystemStatus(allocator);
 }
 
 /// Display configuration

@@ -1,6 +1,8 @@
 //! PrimeTime - NVIDIA-Native Gaming Compositor
 //!
 //! A wlroots-based gaming compositor designed as a Gamescope alternative.
+//! Built to surpass and supersede Gamescope with NVIDIA-first optimizations.
+//!
 //! Features:
 //! - NVIDIA-optimized (direct scanout, VRR, HDR)
 //! - Low latency frame pacing
