@@ -42,7 +42,7 @@
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.0.0-ELEK3ov6AABCdw4_Wc2bbApDCnV8xFur5OnSaAhP0m1o",
+            .hash = "nvlatency-0.0.0-ELEK3s36AAAfOkT0PM_waVwwJz70zrS-ANdq2-1LvMh9",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
@@ -50,7 +50,7 @@
         },
         .nvshader = .{
             .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
-            .hash = "nvshader-0.1.0-k-Y2SpaPAgA-tqFrFwtP29L2MPjeht3SVuFa0FQNOMtS",
+            .hash = "nvshader-0.1.0-k-Y2StXtAgCWtJbTk_60gNBqPNI8OxeG1mbWWgxyYuW8",
         },
         .zeus = .{
             .url = "https://github.com/ghostkellz/zeus/archive/main.tar.gz",
