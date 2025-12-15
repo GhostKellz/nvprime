@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20x86__64-lightgrey?style=flat-square)
-![Driver](https://img.shields.io/badge/NVIDIA%20Driver-535%2B-76B900?style=flat-square)
+![Driver](https://img.shields.io/badge/NVIDIA%20Driver-580%2B-76B900?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=flat-square)
 
 **Unified NVIDIA Linux Platform**
