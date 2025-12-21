@@ -90,6 +90,31 @@ pub fn build(b: *std.Build) void {
     // Install the executable
     b.installArtifact(exe);
 
+    // Create shared library for C API
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "nvprime",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capi/capi.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "nvprime", .module = mod },
+            },
+        }),
+    });
+
+    if (use_nvml) {
+        lib.linkSystemLibrary("nvidia-ml");
+        lib.linkLibC();
+        lib.root_module.addIncludePath(.{ .cwd_relative = "/opt/cuda/targets/x86_64-linux/include" });
+    }
+
+    b.installArtifact(lib);
+
+    // Install the header file
+    b.installFile("include/nvprime.h", "include/nvprime.h");
+
     // Run step
     const run_step = b.step("run", "Run the nvprime CLI");
     const run_cmd = b.addRunArtifact(exe);
