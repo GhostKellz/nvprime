@@ -34,15 +34,15 @@
     .dependencies = .{
         .nvvk = .{
             .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.0-mPNRRvZ1AwDXnKuBFXFUZU_XOW2BYqn1Cjxbd5-1Rt3F",
+            .hash = "nvvk-0.4.0-mPNRRkZ2AwAkfSQHkPmgsoMDs3XDudWPWfyd-YMdzNx8",
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.0-UbzfUT_OAwAf4wcMlnIcFJ7u5N2tTcfOtyr_18dnl9mL",
+            .hash = "nvhud-0.4.0-UbzfUT_OAwAnvF5Oy8HjNs4RlLuCjlRt_Gw4Wwy7awAl",
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.0-ELEK3s36AACyDb4VNqNo3Ci1g15hBnWzP4BLMxreJ2CM",
+            .hash = "nvlatency-0.2.0-ELEK3s36AACj7q9Uc7H1mHlGNJvHFp3PL86tslcPkWS8",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
