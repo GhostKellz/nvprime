@@ -38,7 +38,7 @@
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.0-UbzfUT_OAwC9WeiFFXkWtMhNdgHLcDhjQu2QFQvBM4hl",
+            .hash = "nvhud-0.4.0-UbzfUT_OAwAf4wcMlnIcFJ7u5N2tTcfOtyr_18dnl9mL",
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
