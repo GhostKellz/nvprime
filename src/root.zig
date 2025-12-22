@@ -49,6 +49,9 @@ pub const nvhud = @import("nvhud/nvhud.zig");
 // System integration
 pub const nvpkg = @import("nvpkg/nvpkg.zig");
 
+// D-Bus service
+pub const dbus = @import("dbus/dbus.zig");
+
 // Low-level bindings
 pub const nvml = @import("bindings/nvml.zig");
 
