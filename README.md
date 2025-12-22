@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo/nvprime.png" alt="NVPrime Logo" width="200">
+
 # NVPrime
 
 ![Built with Zig](https://img.shields.io/badge/Built%20with-Zig-F7A41D?style=for-the-badge&logo=zig&logoColor=white)
