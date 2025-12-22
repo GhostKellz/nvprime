@@ -42,7 +42,7 @@
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.0-ELEK3s36AABsTOnLCGvWua0aCcW9RJe-jWBM7da8bHB5",
+            .hash = "nvlatency-0.2.0-ELEK3s36AACxbvjgHN7IDQPAke9wVs8zn39DxzBM85po",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
