@@ -62,22 +62,96 @@ pub const OffsetConfig = struct {
     mem_offset_mhz: i32 = 0,
 };
 
-/// Set clock offset (requires elevated permissions)
+/// Run nvidia-settings query and parse integer result
+fn queryNvidiaSettings(query: []const u8) !i32 {
+    const allocator = std.heap.page_allocator;
+
+    var child = std.process.Child.init(
+        &.{ "nvidia-settings", "-t", "-q", query },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    try child.spawn();
+
+    var stdout = std.ArrayList(u8).init(allocator);
+    defer stdout.deinit();
+
+    const reader = child.stdout.?.reader();
+    reader.readAllArrayList(&stdout, 4096) catch {};
+
+    const result = try child.wait();
+    if (result.Exited != 0) return error.NvidiaSettingsError;
+
+    // Parse the output as an integer
+    const output = std.mem.trim(u8, stdout.items, " \t\n\r");
+    return std.fmt.parseInt(i32, output, 10) catch 0;
+}
+
+/// Run nvidia-settings assignment
+fn assignNvidiaSettings(assignment: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+
+    var child = std.process.Child.init(
+        &.{ "nvidia-settings", "-a", assignment },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    try child.spawn();
+    const result = try child.wait();
+    if (result.Exited != 0) return error.NvidiaSettingsError;
+}
+
+/// Set clock offset (requires elevated permissions and Coolbits enabled)
+/// Note: Requires Coolbits=28 or similar in xorg.conf
 pub fn setOffset(device_index: u32, config: OffsetConfig) !void {
-    _ = device_index;
-    _ = config;
-    // TODO: Implement via nvidia-settings or Coolbits
-    // nvidia-settings -a "[gpu:0]/GPUGraphicsClockOffsetAllPerformanceLevels=100"
-    return error.NotSupported;
+    const allocator = std.heap.page_allocator;
+    var buf: [128]u8 = undefined;
+
+    // Set GPU clock offset for all performance levels
+    const gpu_assign = std.fmt.bufPrint(&buf, "[gpu:{d}]/GPUGraphicsClockOffsetAllPerformanceLevels={d}", .{ device_index, config.gpu_offset_mhz }) catch return error.FormatError;
+    assignNvidiaSettings(gpu_assign) catch |err| {
+        // Coolbits might not be enabled - try per-level approach
+        if (err == error.NvidiaSettingsError) {
+            // Try setting for P0 state specifically
+            const p0_assign = std.fmt.bufPrint(&buf, "[gpu:{d}]/GPUGraphicsClockOffset[3]={d}", .{ device_index, config.gpu_offset_mhz }) catch return error.FormatError;
+            try assignNvidiaSettings(p0_assign);
+        } else return err;
+    };
+
+    // Set memory clock offset
+    if (config.mem_offset_mhz != 0) {
+        var mem_buf: [128]u8 = undefined;
+        const mem_assign = std.fmt.bufPrint(&mem_buf, "[gpu:{d}]/GPUMemoryTransferRateOffsetAllPerformanceLevels={d}", .{ device_index, config.mem_offset_mhz }) catch return error.FormatError;
+        assignNvidiaSettings(mem_assign) catch {
+            // Try per-level if all-levels fails
+            const p0_mem = std.fmt.bufPrint(&mem_buf, "[gpu:{d}]/GPUMemoryTransferRateOffset[3]={d}", .{ device_index, config.mem_offset_mhz }) catch return error.FormatError;
+            assignNvidiaSettings(p0_mem) catch {};
+        };
+    }
+
+    _ = allocator;
 }
 
 /// Get current clock offset
 pub fn getOffset(device_index: u32) !OffsetConfig {
-    _ = device_index;
-    // TODO: Query from nvidia-settings
+    var query_buf: [128]u8 = undefined;
+
+    // Query GPU clock offset (try P0/perf level 3 first)
+    const gpu_query = std.fmt.bufPrint(&query_buf, "[gpu:{d}]/GPUGraphicsClockOffset[3]", .{device_index}) catch return error.FormatError;
+    const gpu_offset = queryNvidiaSettings(gpu_query) catch 0;
+
+    // Query memory offset
+    var mem_buf: [128]u8 = undefined;
+    const mem_query = std.fmt.bufPrint(&mem_buf, "[gpu:{d}]/GPUMemoryTransferRateOffset[3]", .{device_index}) catch return error.FormatError;
+    const mem_offset = queryNvidiaSettings(mem_query) catch 0;
+
     return OffsetConfig{
-        .gpu_offset_mhz = 0,
-        .mem_offset_mhz = 0,
+        .gpu_offset_mhz = gpu_offset,
+        .mem_offset_mhz = mem_offset,
     };
 }
 

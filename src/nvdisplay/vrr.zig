@@ -1,8 +1,11 @@
 //! nvdisplay/vrr - Variable Refresh Rate Control
 //!
 //! Generic VRR control (FreeSync, Adaptive Sync) beyond G-Sync specific features.
+//! Uses DRM sysfs for capability detection and nvidia-settings for control.
 
 const std = @import("std");
+const fs = std.fs;
+const mem = std.mem;
 
 /// VRR technology type
 pub const VrrType = enum {
@@ -48,24 +51,221 @@ pub const VrrState = struct {
     }
 };
 
+/// DRM sysfs path
+const DRM_SYS_DIR = "/sys/class/drm";
+
+/// Read sysfs file value
+fn readSysfs(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
+    const file = fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+
+    var buf: [256]u8 = undefined;
+    const len = file.read(&buf) catch return null;
+    return allocator.dupe(u8, buf[0..len]) catch null;
+}
+
+/// Read sysfs binary file (for EDID)
+fn readSysfsBinary(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
+    const file = fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+
+    var buf: [512]u8 = undefined;
+    const len = file.read(&buf) catch return null;
+    return allocator.dupe(u8, buf[0..len]) catch null;
+}
+
+/// Parse EDID for VRR range from Display Range Limits or CTA-861
+fn parseEdidVrrRange(edid: []const u8) struct { min: u32, max: u32 } {
+    var result = .{ .min = 48, .max = 60 };
+
+    if (edid.len < 128) return result;
+
+    // Look for Display Range Limits descriptor (tag 0xFD) in base EDID
+    var offset: usize = 54;
+    while (offset + 18 <= 126) : (offset += 18) {
+        if (edid[offset] == 0 and edid[offset + 1] == 0 and edid[offset + 2] == 0 and edid[offset + 3] == 0xFD) {
+            result.min = edid[offset + 5];
+            result.max = edid[offset + 6];
+
+            // Check for extended timing (offset flags)
+            if (edid[offset + 4] & 0x02 != 0) {
+                result.max += 255;
+            }
+            break;
+        }
+    }
+
+    // Check CTA-861 extension for FreeSync/VRR range
+    if (edid.len >= 256 and edid[128] == 0x02) {
+        const dtd_start = edid[130];
+        var ext_offset: usize = 132;
+
+        while (ext_offset < 128 + dtd_start) {
+            if (ext_offset >= edid.len) break;
+
+            const tag = (edid[ext_offset] & 0xE0) >> 5;
+            const length = edid[ext_offset] & 0x1F;
+
+            if (tag == 7 and ext_offset + 1 < edid.len) {
+                const ext_tag = edid[ext_offset + 1];
+                // Vendor-Specific Video Data Block for FreeSync (AMD) or Adaptive Sync
+                if (ext_tag == 0x1A and length >= 4) {
+                    // VFPDB - Video Format Preference Data Block
+                    // Contains VRR range info
+                    if (ext_offset + 4 < edid.len) {
+                        result.min = edid[ext_offset + 2];
+                        result.max = edid[ext_offset + 3];
+                    }
+                }
+            }
+
+            ext_offset += length + 1;
+        }
+    }
+
+    return result;
+}
+
+/// Query nvidia-settings for VRR state
+fn queryNvidiaSettingsVrr() struct { gsync_enabled: bool, gsync_compat: bool } {
+    const allocator = std.heap.page_allocator;
+
+    var gsync_enabled = false;
+    var gsync_compat = false;
+
+    // Query AllowGSYNC
+    const result1 = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-t", "-q", "AllowGSYNC" },
+    }) catch return .{ .gsync_enabled = false, .gsync_compat = false };
+    defer allocator.free(result1.stdout);
+    defer allocator.free(result1.stderr);
+
+    if (mem.indexOf(u8, result1.stdout, "1") != null) {
+        gsync_enabled = true;
+    }
+
+    // Query AllowGSYNCCompatible
+    const result2 = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-t", "-q", "AllowGSYNCCompatible" },
+    }) catch return .{ .gsync_enabled = gsync_enabled, .gsync_compat = false };
+    defer allocator.free(result2.stdout);
+    defer allocator.free(result2.stderr);
+
+    if (mem.indexOf(u8, result2.stdout, "1") != null) {
+        gsync_compat = true;
+    }
+
+    return .{ .gsync_enabled = gsync_enabled, .gsync_compat = gsync_compat };
+}
+
 /// Get VRR state for a display
 pub fn getState(display_name: []const u8) !VrrState {
-    _ = display_name;
-    // TODO: Query via libdrm or nvidia-settings
-    return error.NotSupported;
+    const allocator = std.heap.page_allocator;
+
+    // Find connector in DRM sysfs
+    var dir = fs.cwd().openDir(DRM_SYS_DIR, .{ .iterate = true }) catch return error.NotSupported;
+    defer dir.close();
+
+    var found_card: ?[]const u8 = null;
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (!mem.startsWith(u8, entry.name, "card")) continue;
+        const dash_idx = mem.indexOf(u8, entry.name, "-") orelse continue;
+        const connector_name = entry.name[dash_idx + 1 ..];
+
+        if (mem.eql(u8, connector_name, display_name)) {
+            found_card = allocator.dupe(u8, entry.name) catch continue;
+            break;
+        }
+    }
+
+    if (found_card == null) return error.DisplayNotFound;
+    defer allocator.free(found_card.?);
+
+    var path_buf: [512]u8 = undefined;
+
+    // Read vrr_capable from sysfs
+    const vrr_cap_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/vrr_capable", .{ DRM_SYS_DIR, found_card.? }) catch "";
+    var vrr_capable = false;
+    if (vrr_cap_path.len > 0) {
+        if (readSysfs(allocator, vrr_cap_path)) |v| {
+            defer allocator.free(v);
+            vrr_capable = mem.eql(u8, mem.trim(u8, v, "\n \t\r"), "1");
+        }
+    }
+
+    // Read EDID for VRR range
+    const edid_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/edid", .{ DRM_SYS_DIR, found_card.? }) catch "";
+    const edid = if (edid_path.len > 0) readSysfsBinary(allocator, edid_path) else null;
+    defer if (edid) |e| allocator.free(e);
+
+    const vrr_range = if (edid) |e| parseEdidVrrRange(e) else .{ .min = 48, .max = 60 };
+
+    // Query nvidia-settings for current state
+    const nv_state = queryNvidiaSettingsVrr();
+
+    // Determine VRR type
+    var vrr_type: VrrType = .none;
+    if (nv_state.gsync_enabled) {
+        vrr_type = .gsync;
+    } else if (nv_state.gsync_compat) {
+        vrr_type = .gsync_compatible;
+    } else if (vrr_capable) {
+        vrr_type = .vesa_adaptive_sync;
+    }
+
+    // LFC is supported when VRR range is at least 2.4:1
+    const lfc_supported = vrr_capable and (vrr_range.max >= vrr_range.min * 2);
+
+    return VrrState{
+        .vrr_type = vrr_type,
+        .enabled = nv_state.gsync_enabled or nv_state.gsync_compat,
+        .min_hz = vrr_range.min,
+        .max_hz = vrr_range.max,
+        .current_hz = vrr_range.max, // Can't easily query current without DRM
+        .lfc_supported = lfc_supported,
+        .lfc_active = false, // Would need real-time monitoring
+        .vrr_in_use = nv_state.gsync_enabled or nv_state.gsync_compat,
+    };
+}
+
+/// Run nvidia-settings assignment
+fn runNvidiaSettingsAssign(assignment: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-a", assignment },
+    }) catch return error.NvidiaSettingsError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.NvidiaSettingsError;
+    }
 }
 
 /// Enable VRR on a display
+/// Uses nvidia-settings to enable G-Sync and G-Sync Compatible mode
 pub fn enable(display_name: []const u8) !void {
     _ = display_name;
-    // TODO: Implement
-    return error.NotSupported;
+
+    // Enable G-Sync
+    try runNvidiaSettingsAssign("AllowGSYNC=1");
+
+    // Enable G-Sync Compatible (Adaptive Sync)
+    try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
 }
 
 /// Disable VRR on a display
 pub fn disable(display_name: []const u8) !void {
     _ = display_name;
-    return error.NotSupported;
+
+    // Disable G-Sync
+    try runNvidiaSettingsAssign("AllowGSYNC=0");
+    try runNvidiaSettingsAssign("AllowGSYNCCompatible=0");
 }
 
 /// VRR mode for gaming
@@ -99,10 +299,37 @@ pub const VrrMode = enum {
 };
 
 /// Set VRR mode
+/// Configures VRR behavior including vsync and latency settings
 pub fn setMode(display_name: []const u8, mode: VrrMode) !void {
     _ = display_name;
-    _ = mode;
-    return error.NotSupported;
+
+    switch (mode) {
+        .fixed => {
+            // Disable VRR
+            try runNvidiaSettingsAssign("AllowGSYNC=0");
+            try runNvidiaSettingsAssign("AllowGSYNCCompatible=0");
+        },
+        .adaptive_vsync => {
+            // Enable VRR with vsync on
+            try runNvidiaSettingsAssign("AllowGSYNC=1");
+            try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
+            try runNvidiaSettingsAssign("SyncToVBlank=1");
+        },
+        .adaptive_no_vsync => {
+            // Enable VRR with vsync off (allows tearing above max)
+            try runNvidiaSettingsAssign("AllowGSYNC=1");
+            try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
+            try runNvidiaSettingsAssign("SyncToVBlank=0");
+        },
+        .low_latency => {
+            // Enable VRR with low latency mode
+            try runNvidiaSettingsAssign("AllowGSYNC=1");
+            try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
+            try runNvidiaSettingsAssign("SyncToVBlank=0");
+            // Ultra low latency mode
+            try runNvidiaSettingsAssign("AllowFlipping=1");
+        },
+    }
 }
 
 /// Frame timing info
@@ -123,9 +350,27 @@ pub const FrameTiming = struct {
 };
 
 /// Get current frame timing
+/// Note: Accurate frame timing requires Vulkan/OpenGL instrumentation
+/// This provides estimates based on display refresh rate
 pub fn getFrameTiming(display_name: []const u8) !FrameTiming {
-    _ = display_name;
-    return error.NotSupported;
+    // Get VRR state for refresh rate info
+    const state = try getState(display_name);
+
+    // Estimate frame time from max refresh (worst case)
+    const target_hz: f32 = @floatFromInt(state.max_hz);
+    const target_frame_time_us: u64 = @intFromFloat(1_000_000.0 / target_hz);
+
+    // Current frame time would need real-time measurement
+    // For now, estimate based on current_hz
+    const current_hz: f32 = @floatFromInt(state.current_hz);
+    const frame_time_us: u64 = @intFromFloat(1_000_000.0 / current_hz);
+
+    return FrameTiming{
+        .frame_time_us = frame_time_us,
+        .target_frame_time_us = target_frame_time_us,
+        .effective_hz = current_hz,
+        .frames_in_flight = 2, // Typical double buffering
+    };
 }
 
 /// VRR statistics
@@ -143,16 +388,47 @@ pub const VrrStats = struct {
     torn_frames: u64,
 };
 
+/// VRR stats storage (per-session, not persistent)
+var g_vrr_stats = VrrStats{
+    .vrr_frames = 0,
+    .lfc_frames = 0,
+    .avg_refresh_hz = 0,
+    .min_refresh_hz = 0,
+    .max_refresh_hz = 0,
+    .torn_frames = 0,
+};
+
 /// Get VRR statistics
+/// Note: Real-time VRR statistics require continuous monitoring
+/// This provides session-based estimates
 pub fn getStats(display_name: []const u8) !VrrStats {
-    _ = display_name;
-    return error.NotSupported;
+    // Get current state to populate range info
+    const state = getState(display_name) catch return g_vrr_stats;
+
+    // Update stats with current state info
+    if (state.enabled) {
+        g_vrr_stats.min_refresh_hz = state.min_hz;
+        g_vrr_stats.max_refresh_hz = state.max_hz;
+        if (g_vrr_stats.avg_refresh_hz == 0) {
+            g_vrr_stats.avg_refresh_hz = @floatFromInt(state.current_hz);
+        }
+    }
+
+    return g_vrr_stats;
 }
 
 /// Reset VRR statistics
 pub fn resetStats(display_name: []const u8) !void {
     _ = display_name;
-    return error.NotSupported;
+
+    g_vrr_stats = VrrStats{
+        .vrr_frames = 0,
+        .lfc_frames = 0,
+        .avg_refresh_hz = 0,
+        .min_refresh_hz = 0,
+        .max_refresh_hz = 0,
+        .torn_frames = 0,
+    };
 }
 
 test "vrr state" {

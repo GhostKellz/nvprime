@@ -52,27 +52,91 @@ pub const GsyncState = struct {
     }
 };
 
+/// Run nvidia-settings query and return output
+fn runNvidiaSettingsQuery(query: []const u8) !?[]const u8 {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-q", query },
+    }) catch return null;
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        allocator.free(result.stdout);
+        return null;
+    }
+
+    return if (result.stdout.len > 0) result.stdout else null;
+}
+
+/// Run nvidia-settings assignment
+fn runNvidiaSettingsAssign(assignment: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-a", assignment },
+    }) catch return error.NvidiaSettingsError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.NvidiaSettingsError;
+    }
+}
+
 /// Get G-Sync state for a display
 pub fn getState(display_name: []const u8) !GsyncState {
     _ = display_name;
-    // TODO: Query via nvidia-settings or NVAPI
-    // nvidia-settings -q CurrentMetaMode
-    // nvidia-settings -q AllowGSYNCCompatible
-    return error.NotSupported;
+
+    // Query G-Sync status via nvidia-settings
+    var state = GsyncState{
+        .mode = .disabled,
+        .enabled = false,
+        .min_refresh_hz = 0,
+        .max_refresh_hz = 0,
+        .current_refresh_hz = 0,
+        .lfc_supported = false,
+        .lfc_active = false,
+        .pulsar_supported = false,
+        .pulsar_active = false,
+    };
+
+    // Check if G-Sync is enabled
+    if (runNvidiaSettingsQuery("AllowGSYNC")) |output| {
+        defer std.heap.page_allocator.free(output);
+        if (std.mem.indexOf(u8, output, "1")) |_| {
+            state.enabled = true;
+            state.mode = .native;
+        }
+    } else |_| {}
+
+    // Check G-Sync Compatible mode
+    if (runNvidiaSettingsQuery("AllowGSYNCCompatible")) |output| {
+        defer std.heap.page_allocator.free(output);
+        if (std.mem.indexOf(u8, output, "1")) |_| {
+            if (state.mode == .disabled) {
+                state.mode = .compatible;
+            }
+            state.enabled = true;
+        }
+    } else |_| {}
+
+    return state;
 }
 
 /// Enable G-Sync on a display
 pub fn enable(display_name: []const u8) !void {
     _ = display_name;
-    // TODO: nvidia-settings or NVAPI
-    return error.NotSupported;
+    try runNvidiaSettingsAssign("AllowGSYNC=1");
+    try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
 }
 
 /// Disable G-Sync on a display
 pub fn disable(display_name: []const u8) !void {
     _ = display_name;
-    // TODO: nvidia-settings or NVAPI
-    return error.NotSupported;
+    try runNvidiaSettingsAssign("AllowGSYNC=0");
 }
 
 /// G-Sync configuration options
@@ -90,11 +154,31 @@ pub const GsyncConfig = struct {
 /// Apply G-Sync configuration
 pub fn configure(display_name: []const u8, config: GsyncConfig) !void {
     _ = display_name;
-    _ = config;
-    // TODO: Apply via nvidia-settings
-    // nvidia-settings -a AllowGSYNC=1
-    // nvidia-settings -a AllowGSYNCCompatible=1
-    return error.NotSupported;
+
+    // Set main G-Sync toggle
+    if (config.enabled) {
+        try runNvidiaSettingsAssign("AllowGSYNC=1");
+    } else {
+        try runNvidiaSettingsAssign("AllowGSYNC=0");
+    }
+
+    // Set G-Sync Compatible (Adaptive Sync) support
+    if (config.allow_compatible) {
+        try runNvidiaSettingsAssign("AllowGSYNCCompatible=1");
+    } else {
+        try runNvidiaSettingsAssign("AllowGSYNCCompatible=0");
+    }
+
+    // Set G-Sync indicator
+    if (config.show_indicator) {
+        try runNvidiaSettingsAssign("ShowGSYNCIndicator=1");
+    } else {
+        try runNvidiaSettingsAssign("ShowGSYNCIndicator=0");
+    }
+
+    // Note: Windowed G-Sync is typically enabled via:
+    // nvidia-settings -a AllowGSYNCVisualIndicator=1 (for windowed apps)
+    // This may require additional X11 configuration
 }
 
 /// Set VRR range (if monitor supports custom ranges)
@@ -108,11 +192,52 @@ pub fn setVrrRange(display_name: []const u8, min_hz: u32, max_hz: u32) !void {
 }
 
 /// Check if display is G-Sync validated
+/// A validated display has been tested by NVIDIA for G-Sync Compatible certification
 pub fn isValidated(display_name: []const u8) !bool {
-    _ = display_name;
-    // TODO: Check against NVIDIA's validated display list
-    // Could fetch from: https://www.nvidia.com/en-us/geforce/products/g-sync-monitors/specs/
-    return error.NotSupported;
+    // Query nvidia-settings for G-Sync validation status
+    // Validated monitors report as "G-Sync Compatible (Validated)" vs just "Compatible"
+    const allocator = std.heap.page_allocator;
+
+    // Build query for specific display
+    var query_buf: [128]u8 = undefined;
+    const query = std.fmt.bufPrint(&query_buf, "[{s}]/GsyncCompatible", .{display_name}) catch {
+        // Fallback to global query
+        return isValidatedGlobal();
+    };
+
+    if (runNvidiaSettingsQuery(query)) |output| {
+        defer allocator.free(output);
+        // Validated monitors show specific attributes
+        // Check for validation indicators in output
+        if (std.mem.indexOf(u8, output, "validated") != null or
+            std.mem.indexOf(u8, output, "Validated") != null)
+        {
+            return true;
+        }
+        // Native G-Sync monitors are always "validated" by definition
+        if (std.mem.indexOf(u8, output, "G-SYNC") != null and
+            std.mem.indexOf(u8, output, "Compatible") == null)
+        {
+            return true;
+        }
+        return false;
+    } else |_| {}
+
+    return isValidatedGlobal();
+}
+
+fn isValidatedGlobal() bool {
+    // Check global AllowGSYNC attribute - native G-Sync is always validated
+    if (runNvidiaSettingsQuery("AllowGSYNC")) |output| {
+        defer std.heap.page_allocator.free(output);
+        // If AllowGSYNC reports native (not compatible), it's validated
+        if (std.mem.indexOf(u8, output, "native") != null or
+            std.mem.indexOf(u8, output, "Native") != null)
+        {
+            return true;
+        }
+    } else |_| {}
+    return false;
 }
 
 /// G-Sync indicator mode
@@ -124,9 +249,10 @@ pub const IndicatorMode = enum {
 
 /// Set G-Sync indicator
 pub fn setIndicator(mode: IndicatorMode) !void {
-    _ = mode;
-    // nvidia-settings -a ShowGSyncIndicator=1
-    return error.NotSupported;
+    switch (mode) {
+        .off => try runNvidiaSettingsAssign("ShowGSYNCIndicator=0"),
+        .on_when_active, .always => try runNvidiaSettingsAssign("ShowGSYNCIndicator=1"),
+    }
 }
 
 /// G-Sync pendulum test info

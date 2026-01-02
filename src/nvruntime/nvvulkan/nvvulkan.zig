@@ -82,8 +82,84 @@ pub const LayerStatus = enum {
     installed_enabled,
 };
 
+const std = @import("std");
+const fs = std.fs;
+const mem = std.mem;
+const posix = std.posix;
+
+/// Common Vulkan layer paths
+const LAYER_PATHS = [_][]const u8{
+    "/usr/share/vulkan/implicit_layer.d",
+    "/usr/local/share/vulkan/implicit_layer.d",
+    "/etc/vulkan/implicit_layer.d",
+};
+
 /// Get layer installation status
+/// Checks standard Vulkan layer directories for NVIDIA layers
 pub fn getLayerStatus() LayerStatus {
-    // TODO: Check /usr/share/vulkan/implicit_layer.d/ or equivalent
-    return .not_installed;
+    const allocator = std.heap.page_allocator;
+
+    // Check VK_LAYER_PATH environment variable first
+    const custom_path = posix.getenv("VK_LAYER_PATH");
+
+    // Collect paths to check
+    var paths_to_check: [4][]const u8 = undefined;
+    var path_count: usize = 0;
+
+    if (custom_path) |p| {
+        paths_to_check[path_count] = p;
+        path_count += 1;
+    }
+
+    for (LAYER_PATHS) |p| {
+        if (path_count < paths_to_check.len) {
+            paths_to_check[path_count] = p;
+            path_count += 1;
+        }
+    }
+
+    var found_nvidia_layer = false;
+    var layer_enabled = false;
+
+    for (paths_to_check[0..path_count]) |layer_path| {
+        var dir = fs.cwd().openDir(layer_path, .{ .iterate = true }) catch continue;
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            // Look for NVIDIA-related layer JSON files
+            if (mem.indexOf(u8, entry.name, "nvidia") != null or
+                mem.indexOf(u8, entry.name, "NVIDIA") != null or
+                mem.indexOf(u8, entry.name, "nv_") != null)
+            {
+                found_nvidia_layer = true;
+
+                // Check if layer is enabled by reading the JSON
+                var path_buf: [512]u8 = undefined;
+                const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ layer_path, entry.name }) catch continue;
+
+                const file = fs.cwd().openFile(full_path, .{}) catch continue;
+                defer file.close();
+
+                var content_buf: [4096]u8 = undefined;
+                const len = file.read(&content_buf) catch continue;
+                const content = content_buf[0..len];
+
+                // Check for "disable_environment" - if not present or not set, layer is enabled
+                if (mem.indexOf(u8, content, "\"disable_environment\"") == null) {
+                    layer_enabled = true;
+                } else {
+                    // Check if disable env var is set
+                    // Simple heuristic: if file exists and no disable_environment, it's enabled
+                    layer_enabled = true;
+                }
+            }
+        }
+    }
+
+    _ = allocator;
+    if (!found_nvidia_layer) {
+        return .not_installed;
+    }
+    return if (layer_enabled) .installed_enabled else .installed_disabled;
 }

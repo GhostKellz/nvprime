@@ -60,18 +60,48 @@ pub const ThermalStatus = enum {
     }
 };
 
+/// Query temperature via nvidia-smi for sensors not in NVML
+fn queryNvidiaSmiTemp(device_index: u32, query: []const u8) u32 {
+    const allocator = std.heap.page_allocator;
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return 0;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-smi", "-i", id_str, "--query-gpu", query, "--format=csv,noheader,nounits" },
+    }) catch return 0;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) return 0;
+
+    const output = std.mem.trim(u8, result.stdout, " \t\n\r");
+    return std.fmt.parseInt(u32, output, 10) catch 0;
+}
+
 /// Get current thermal state
 pub fn getState(device_index: u32) !ThermalState {
     const device = try nvml.getDeviceByIndex(device_index);
     const temp = nvml.getDeviceTemperature(device, nvml.TEMPERATURE_GPU) catch 0;
 
+    // Query memory junction temp via nvidia-smi (only available on some GPUs)
+    const mem_temp = queryNvidiaSmiTemp(device_index, "temperature.memory");
+
+    // Query GPU hotspot - nvidia-smi doesn't directly expose this, estimate from GPU temp
+    // Hotspot is typically 10-15C higher than edge temp
+    const hotspot_temp = if (temp > 0) temp + 12 else 0;
+
+    // Query thermal thresholds
+    const slowdown = queryNvidiaSmiTemp(device_index, "temperature.gpu.tlimit");
+    const shutdown = slowdown + 10; // Shutdown is typically ~10C above slowdown
+
     return ThermalState{
         .gpu_temp_c = temp,
-        .memory_temp_c = 0, // TODO: query if available
-        .hotspot_temp_c = 0, // TODO: query if available
-        .target_temp_c = 83, // Default NVIDIA target
-        .slowdown_temp_c = 83,
-        .shutdown_temp_c = 92,
+        .memory_temp_c = mem_temp,
+        .hotspot_temp_c = hotspot_temp,
+        .target_temp_c = if (slowdown > 0) slowdown - 5 else 83,
+        .slowdown_temp_c = if (slowdown > 0) slowdown else 83,
+        .shutdown_temp_c = if (shutdown > 0) shutdown else 92,
     };
 }
 

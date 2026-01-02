@@ -95,9 +95,50 @@ pub const DxvkConfig = struct {
     }
 };
 
+const fs = std.fs;
+const mem = std.mem;
+const posix = std.posix;
+
+/// Common DXVK installation paths
+const DXVK_PATHS = [_][]const u8{
+    "/usr/share/dxvk",
+    "/usr/local/share/dxvk",
+    "/opt/dxvk",
+};
+
 /// Get current patch status
+/// Checks for NVIDIA-patched DXVK installations
 pub fn getPatchStatus() PatchStatus {
-    // TODO: Check DXVK installation and patch state
+    // Check for DXVK_CONFIG environment (indicates custom config)
+    if (posix.getenv("DXVK_CONFIG")) |_| {
+        // Custom config present - check if NVIDIA features enabled
+        return .applied;
+    }
+
+    // Check for NVIDIA-specific DXVK builds
+    for (DXVK_PATHS) |dxvk_path| {
+        var path_buf: [512]u8 = undefined;
+
+        // Check for NVIDIA patch marker file
+        const marker_path = std.fmt.bufPrint(&path_buf, "{s}/nvidia-patches", .{dxvk_path}) catch continue;
+        if (fs.cwd().access(marker_path, .{})) |_| {
+            return .applied;
+        } else |_| {}
+
+        // Check for DXVK-nvapi which indicates NVIDIA integration
+        const nvapi_path = std.fmt.bufPrint(&path_buf, "{s}/nvapi", .{dxvk_path}) catch continue;
+        if (fs.cwd().access(nvapi_path, .{})) |_| {
+            return .applied;
+        } else |_| {}
+    }
+
+    // Check if running with async patches (common NVIDIA optimization)
+    if (posix.getenv("DXVK_ASYNC")) |val| {
+        if (mem.eql(u8, val, "1")) {
+            return .applied;
+        }
+    }
+
     return .not_applied;
 }
 
@@ -115,10 +156,38 @@ pub const EnvVars = struct {
     pub const DXVK_FRAME_RATE = "DXVK_FRAME_RATE";
 
     /// Get recommended env vars for a config
+    /// Returns a static array of key-value pairs for environment setup
     pub fn forConfig(config: DxvkConfig) []const [2][]const u8 {
-        _ = config;
-        // TODO: Generate env vars based on config
-        return &[_][2][]const u8{};
+        // Static arrays for different configurations
+        const env_basic = [_][2][]const u8{
+            .{ DXVK_ASYNC, "1" },
+            .{ DXVK_LOG_LEVEL, "none" },
+        };
+
+        const env_aggressive = [_][2][]const u8{
+            .{ DXVK_ASYNC, "1" },
+            .{ DXVK_LOG_LEVEL, "none" },
+            .{ "DXVK_CONFIG_FILE", "" }, // Use default optimized config
+            .{ "VKD3D_FEATURE_LEVEL", "12_2" },
+        };
+
+        const env_experimental = [_][2][]const u8{
+            .{ DXVK_ASYNC, "1" },
+            .{ DXVK_LOG_LEVEL, "none" },
+            .{ "DXVK_NVAPI_ALLOW_OTHER_DRIVERS", "1" },
+            .{ "DXVK_ENABLE_NVAPI", "1" },
+        };
+
+        const env_none = [_][2][]const u8{
+            .{ DXVK_LOG_LEVEL, "info" },
+        };
+
+        return switch (config.optimization_level) {
+            .none => &env_none,
+            .basic => &env_basic,
+            .aggressive => &env_aggressive,
+            .experimental => &env_experimental,
+        };
     }
 };
 
@@ -138,9 +207,100 @@ pub const DxvkVersion = struct {
 };
 
 /// Detect installed DXVK version
+/// Parses version from DXVK shared libraries or version files
 pub fn detectVersion() ?DxvkVersion {
-    // TODO: Parse DXVK DLL/SO version info
+    const allocator = std.heap.page_allocator;
+
+    // Check common locations for DXVK version info
+    const version_paths = [_][]const u8{
+        "/usr/share/dxvk/version",
+        "/usr/local/share/dxvk/version",
+        "/opt/dxvk/version",
+    };
+
+    for (version_paths) |path| {
+        const file = fs.cwd().openFile(path, .{}) catch continue;
+        defer file.close();
+
+        var buf: [64]u8 = undefined;
+        const len = file.read(&buf) catch continue;
+        const content = mem.trim(u8, buf[0..len], " \t\n\r");
+
+        // Parse version string like "2.3.1" or "2.3.1-async"
+        return parseVersionString(content);
+    }
+
+    // Try to get version from pacman/package manager
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "pacman", "-Q", "dxvk" },
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term == .Exited and result.term.Exited == 0) {
+        // Output format: "dxvk 2.3.1-1"
+        const output = mem.trim(u8, result.stdout, " \t\n\r");
+        if (mem.indexOf(u8, output, " ")) |space_idx| {
+            const version_str = output[space_idx + 1 ..];
+            // Remove package revision (-1, -2, etc)
+            const dash_idx = mem.indexOf(u8, version_str, "-") orelse version_str.len;
+            return parseVersionString(version_str[0..dash_idx]);
+        }
+    }
+
     return null;
+}
+
+fn parseVersionString(s: []const u8) ?DxvkVersion {
+    var parsed = DxvkVersion{
+        .major = 0,
+        .minor = 0,
+        .patch = 0,
+        .is_async = mem.indexOf(u8, s, "async") != null,
+        .is_gplasync = mem.indexOf(u8, s, "gplasync") != null,
+    };
+
+    // Parse major.minor.patch
+    var iter = mem.splitScalar(u8, s, '.');
+    if (iter.next()) |major_str| {
+        // Handle trailing non-numeric (like "-async")
+        const clean_major = blk: {
+            for (major_str, 0..) |c, i| {
+                if (c < '0' or c > '9') {
+                    break :blk major_str[0..i];
+                }
+            }
+            break :blk major_str;
+        };
+        parsed.major = std.fmt.parseInt(u32, clean_major, 10) catch 0;
+    } else return null;
+
+    if (iter.next()) |minor_str| {
+        const clean_minor = blk: {
+            for (minor_str, 0..) |c, i| {
+                if (c < '0' or c > '9') {
+                    break :blk minor_str[0..i];
+                }
+            }
+            break :blk minor_str;
+        };
+        parsed.minor = std.fmt.parseInt(u32, clean_minor, 10) catch 0;
+    }
+
+    if (iter.next()) |patch_str| {
+        const clean_patch = blk: {
+            for (patch_str, 0..) |c, i| {
+                if (c < '0' or c > '9') {
+                    break :blk patch_str[0..i];
+                }
+            }
+            break :blk patch_str;
+        };
+        parsed.patch = std.fmt.parseInt(u32, clean_patch, 10) catch 0;
+    }
+
+    return parsed;
 }
 
 test "nvdxvk config" {

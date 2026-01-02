@@ -182,7 +182,7 @@ pub fn getState(allocator: std.mem.Allocator) !DisplayState {
             .supports_gsync = display.gsync_capable,
             .supports_gsync_compatible = display.gsync_compatible,
             .supports_vrr = display.vrr_capable,
-            .supports_hdr = false, // TODO: Query HDR capability
+            .supports_hdr = false, // Updated below after name copy
             .hdr_active = false,
             .vrr_active = display.vrr_enabled,
         };
@@ -190,6 +190,14 @@ pub fn getState(allocator: std.mem.Allocator) !DisplayState {
         // Copy name
         const name_len = @min(display.name.len, info.name.len - 1);
         @memcpy(info.name[0..name_len], display.name[0..name_len]);
+
+        // Query HDR state now that we have the display name
+        if (hdr.getState(display.name[0..name_len])) |hdr_state| {
+            info.supports_hdr = hdr_state.supported;
+            info.hdr_active = hdr_state.enabled;
+        } else |_| {
+            // HDR query failed, leave defaults (false)
+        }
 
         state.displays[i] = info;
         state.display_count += 1;
@@ -243,10 +251,42 @@ pub const ColorFormat = enum {
 
 /// Apply display configuration
 pub fn configure(display_name: []const u8, config: DisplayConfig) !void {
-    _ = display_name;
-    _ = config;
-    // TODO: Implement via xrandr/wlr-output-management
-    return error.NotSupported;
+    const allocator = std.heap.page_allocator;
+
+    // Apply resolution/refresh via multimon
+    var resolution_str: [32]u8 = undefined;
+    const res_len = (std.fmt.bufPrint(&resolution_str, "{d}x{d}", .{ config.width, config.height }) catch return error.InvalidConfig).len;
+
+    // Use multimon to set resolution - this handles Wayland/X11 abstraction
+    const current_layout = multimon.getLayout(allocator) catch return error.NotSupported;
+    _ = current_layout;
+
+    // Configure using the appropriate display server method
+    const display_server = multimon.detectDisplayServer();
+    switch (display_server) {
+        .wayland_hyprland, .wayland_sway, .wayland_kwin, .wayland_gnome, .wayland_other => {
+            // Wayland: Use compositor-specific tools
+            try multimon.enableDisplay(display_name, resolution_str[0..res_len], config.refresh_hz);
+        },
+        .x11 => {
+            // X11: Use xrandr
+            try multimon.enableDisplay(display_name, resolution_str[0..res_len], config.refresh_hz);
+        },
+    }
+
+    // Configure VRR if requested
+    if (config.enable_vrr) {
+        vrr.enable(display_name) catch {};
+    } else {
+        vrr.disable(display_name) catch {};
+    }
+
+    // Configure HDR if requested
+    if (config.enable_hdr) {
+        hdr.enable(display_name) catch {};
+    } else {
+        hdr.disable(display_name) catch {};
+    }
 }
 
 /// Display profile for quick switching

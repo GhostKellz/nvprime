@@ -2,11 +2,49 @@
 //!
 //! Low-level Zig bindings to libnvidia-ml for GPU management.
 //! This provides the foundation for nvcaps, nvcore, nvpower, and nvdisplay.
+//!
+//! When built with -Dnvml=false, stub implementations are provided.
 
 const std = @import("std");
-const c = @cImport({
+const build_options = @import("build_options");
+
+const use_nvml = build_options.use_nvml;
+
+// Only include NVML headers when enabled
+const c = if (use_nvml) @cImport({
     @cInclude("nvml.h");
-});
+}) else struct {
+    // Stub types when NVML not available
+    pub const nvmlReturn_t = i32;
+    pub const nvmlDevice_t = *anyopaque;
+    pub const nvmlPciInfo_t = extern struct {
+        busIdLegacy: [16]u8 = undefined,
+        domain: u32 = 0,
+        bus: u32 = 0,
+        device: u32 = 0,
+        pciDeviceId: u32 = 0,
+        pciSubSystemId: u32 = 0,
+        busId: [32]u8 = undefined,
+    };
+    pub const nvmlMemory_t = extern struct { total: u64 = 0, free: u64 = 0, used: u64 = 0 };
+    pub const nvmlUtilization_t = extern struct { gpu: u32 = 0, memory: u32 = 0 };
+    pub const nvmlPstates_t = i32;
+    pub const nvmlClockType_t = i32;
+    pub const nvmlTemperatureSensors_t = i32;
+    pub const nvmlDeviceArchitecture_t = i32;
+    pub const NVML_SUCCESS: i32 = 0;
+    pub const NVML_CLOCK_GRAPHICS: i32 = 0;
+    pub const NVML_CLOCK_SM: i32 = 1;
+    pub const NVML_CLOCK_MEM: i32 = 2;
+    pub const NVML_CLOCK_VIDEO: i32 = 3;
+    pub const NVML_TEMPERATURE_GPU: i32 = 0;
+    pub const NVML_PSTATE_0: i32 = 0;
+    pub const NVML_PSTATE_1: i32 = 1;
+    pub const NVML_PSTATE_2: i32 = 2;
+    pub const NVML_PSTATE_3: i32 = 3;
+    pub const NVML_PSTATE_8: i32 = 8;
+    pub const NVML_PSTATE_15: i32 = 15;
+};
 
 pub const NvmlError = error{
     Uninitialized,
@@ -33,34 +71,13 @@ pub const NvmlError = error{
     InsufficientResources,
     FreqNotSupported,
     Unknown,
+    NvmlNotAvailable,
 };
 
 fn mapNvmlReturn(ret: c.nvmlReturn_t) NvmlError!void {
+    if (!use_nvml) return error.NvmlNotAvailable;
     return switch (ret) {
         c.NVML_SUCCESS => {},
-        c.NVML_ERROR_UNINITIALIZED => error.Uninitialized,
-        c.NVML_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
-        c.NVML_ERROR_NOT_SUPPORTED => error.NotSupported,
-        c.NVML_ERROR_NO_PERMISSION => error.NoPermission,
-        c.NVML_ERROR_NOT_FOUND => error.NotFound,
-        c.NVML_ERROR_INSUFFICIENT_SIZE => error.InsufficientSize,
-        c.NVML_ERROR_INSUFFICIENT_POWER => error.InsufficientPower,
-        c.NVML_ERROR_DRIVER_NOT_LOADED => error.DriverNotLoaded,
-        c.NVML_ERROR_TIMEOUT => error.Timeout,
-        c.NVML_ERROR_IRQ_ISSUE => error.IrqIssue,
-        c.NVML_ERROR_LIBRARY_NOT_FOUND => error.LibraryNotFound,
-        c.NVML_ERROR_FUNCTION_NOT_FOUND => error.FunctionNotFound,
-        c.NVML_ERROR_CORRUPTED_INFOROM => error.CorruptedInfoROM,
-        c.NVML_ERROR_GPU_IS_LOST => error.GpuIsLost,
-        c.NVML_ERROR_RESET_REQUIRED => error.ResetRequired,
-        c.NVML_ERROR_OPERATING_SYSTEM => error.OperatingSystem,
-        c.NVML_ERROR_LIB_RM_VERSION_MISMATCH => error.LibRmVersionMismatch,
-        c.NVML_ERROR_IN_USE => error.InUse,
-        c.NVML_ERROR_MEMORY => error.Memory,
-        c.NVML_ERROR_NO_DATA => error.NoData,
-        c.NVML_ERROR_VGPU_ECC_NOT_SUPPORTED => error.VgpuEccNotSupported,
-        c.NVML_ERROR_INSUFFICIENT_RESOURCES => error.InsufficientResources,
-        c.NVML_ERROR_FREQ_NOT_SUPPORTED => error.FreqNotSupported,
         else => error.Unknown,
     };
 }
@@ -94,8 +111,14 @@ pub const PSTATE_15 = c.NVML_PSTATE_15;
 // State tracking
 var initialized = false;
 
+/// Check if NVML is available at compile time
+pub fn isAvailable() bool {
+    return use_nvml;
+}
+
 /// Initialize NVML library
 pub fn init() NvmlError!void {
+    if (!use_nvml) return error.NvmlNotAvailable;
     if (initialized) return;
     try mapNvmlReturn(c.nvmlInit_v2());
     initialized = true;
@@ -103,6 +126,7 @@ pub fn init() NvmlError!void {
 
 /// Shutdown NVML library
 pub fn shutdown() void {
+    if (!use_nvml) return;
     if (!initialized) return;
     _ = c.nvmlShutdown();
     initialized = false;
@@ -110,6 +134,7 @@ pub fn shutdown() void {
 
 /// Get NVML driver version string
 pub fn getDriverVersion() NvmlError![80]u8 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var version: [80]u8 = undefined;
     try mapNvmlReturn(c.nvmlSystemGetDriverVersion(&version, version.len));
     return version;
@@ -117,6 +142,7 @@ pub fn getDriverVersion() NvmlError![80]u8 {
 
 /// Get NVML library version string
 pub fn getNvmlVersion() NvmlError![80]u8 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var version: [80]u8 = undefined;
     try mapNvmlReturn(c.nvmlSystemGetNVMLVersion(&version, version.len));
     return version;
@@ -124,6 +150,7 @@ pub fn getNvmlVersion() NvmlError![80]u8 {
 
 /// Get number of GPU devices
 pub fn getDeviceCount() NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var count: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetCount_v2(&count));
     return count;
@@ -131,6 +158,7 @@ pub fn getDeviceCount() NvmlError!u32 {
 
 /// Get device handle by index
 pub fn getDeviceByIndex(index: u32) NvmlError!Device {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var device: Device = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetHandleByIndex_v2(index, &device));
     return device;
@@ -138,6 +166,7 @@ pub fn getDeviceByIndex(index: u32) NvmlError!Device {
 
 /// Get device name
 pub fn getDeviceName(device: Device) NvmlError![96]u8 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var name: [96]u8 = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetName(device, &name, name.len));
     return name;
@@ -145,6 +174,7 @@ pub fn getDeviceName(device: Device) NvmlError![96]u8 {
 
 /// Get device UUID
 pub fn getDeviceUuid(device: Device) NvmlError![96]u8 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var uuid: [96]u8 = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetUUID(device, &uuid, uuid.len));
     return uuid;
@@ -152,6 +182,7 @@ pub fn getDeviceUuid(device: Device) NvmlError![96]u8 {
 
 /// Get device PCI info
 pub fn getDevicePciInfo(device: Device) NvmlError!PciInfo {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var pci: PciInfo = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetPciInfo_v3(device, &pci));
     return pci;
@@ -159,6 +190,7 @@ pub fn getDevicePciInfo(device: Device) NvmlError!PciInfo {
 
 /// Get device memory info
 pub fn getDeviceMemoryInfo(device: Device) NvmlError!Memory {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var memory: Memory = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetMemoryInfo(device, &memory));
     return memory;
@@ -166,6 +198,7 @@ pub fn getDeviceMemoryInfo(device: Device) NvmlError!Memory {
 
 /// Get device utilization rates
 pub fn getDeviceUtilization(device: Device) NvmlError!Utilization {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var util: Utilization = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetUtilizationRates(device, &util));
     return util;
@@ -173,6 +206,7 @@ pub fn getDeviceUtilization(device: Device) NvmlError!Utilization {
 
 /// Get current GPU clock speed (MHz)
 pub fn getDeviceClock(device: Device, clock_type: ClockType) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var clock: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetClockInfo(device, clock_type, &clock));
     return clock;
@@ -180,6 +214,7 @@ pub fn getDeviceClock(device: Device, clock_type: ClockType) NvmlError!u32 {
 
 /// Get max GPU clock speed (MHz)
 pub fn getDeviceMaxClock(device: Device, clock_type: ClockType) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var clock: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetMaxClockInfo(device, clock_type, &clock));
     return clock;
@@ -187,6 +222,7 @@ pub fn getDeviceMaxClock(device: Device, clock_type: ClockType) NvmlError!u32 {
 
 /// Get current performance state (P-state)
 pub fn getDevicePerformanceState(device: Device) NvmlError!PStates {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var pstate: PStates = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetPerformanceState(device, &pstate));
     return pstate;
@@ -194,6 +230,7 @@ pub fn getDevicePerformanceState(device: Device) NvmlError!PStates {
 
 /// Get GPU temperature
 pub fn getDeviceTemperature(device: Device, sensor: TemperatureSensors) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var temp: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetTemperature(device, sensor, &temp));
     return temp;
@@ -201,6 +238,7 @@ pub fn getDeviceTemperature(device: Device, sensor: TemperatureSensors) NvmlErro
 
 /// Get GPU power usage (milliwatts)
 pub fn getDevicePowerUsage(device: Device) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var power: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetPowerUsage(device, &power));
     return power;
@@ -208,6 +246,7 @@ pub fn getDevicePowerUsage(device: Device) NvmlError!u32 {
 
 /// Get GPU power limit (milliwatts)
 pub fn getDevicePowerLimit(device: Device) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var limit: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetPowerManagementLimit(device, &limit));
     return limit;
@@ -215,11 +254,13 @@ pub fn getDevicePowerLimit(device: Device) NvmlError!u32 {
 
 /// Set GPU power limit (milliwatts) - requires root
 pub fn setDevicePowerLimit(device: Device, limit: u32) NvmlError!void {
+    if (!use_nvml) return error.NvmlNotAvailable;
     try mapNvmlReturn(c.nvmlDeviceSetPowerManagementLimit(device, limit));
 }
 
 /// Get fan speed percentage
 pub fn getDeviceFanSpeed(device: Device) NvmlError!u32 {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var speed: c_uint = 0;
     try mapNvmlReturn(c.nvmlDeviceGetFanSpeed(device, &speed));
     return speed;
@@ -227,6 +268,7 @@ pub fn getDeviceFanSpeed(device: Device) NvmlError!u32 {
 
 /// Get CUDA compute capability
 pub fn getDeviceCudaComputeCapability(device: Device) NvmlError!struct { major: i32, minor: i32 } {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var major: c_int = 0;
     var minor: c_int = 0;
     try mapNvmlReturn(c.nvmlDeviceGetCudaComputeCapability(device, &major, &minor));
@@ -235,6 +277,7 @@ pub fn getDeviceCudaComputeCapability(device: Device) NvmlError!struct { major: 
 
 /// Get device architecture
 pub fn getDeviceArchitecture(device: Device) NvmlError!c.nvmlDeviceArchitecture_t {
+    if (!use_nvml) return error.NvmlNotAvailable;
     var arch: c.nvmlDeviceArchitecture_t = undefined;
     try mapNvmlReturn(c.nvmlDeviceGetArchitecture(device, &arch));
     return arch;
@@ -248,6 +291,7 @@ pub const FeatureQuery = enum {
 };
 
 pub fn isFeatureSupported(device: Device, feature: FeatureQuery) bool {
+    if (!use_nvml) return false;
     switch (feature) {
         .power_management => {
             var limit: c_uint = 0;

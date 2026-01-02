@@ -39,6 +39,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Create build options for conditional compilation
+    const options = b.addOptions();
+    options.addOption(bool, "use_nvml", use_nvml);
+
     // Create the nvprime module
     const mod = b.addModule("nvprime", .{
         .root_source_file = b.path("src/root.zig"),
@@ -52,6 +56,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "nvshader", .module = nvshader_dep.module("nvshader") },
             .{ .name = "zeus", .module = zeus_dep.module("zeus") },
             .{ .name = "ghostvk", .module = ghostvk_dep.module("ghostVK") },
+            .{ .name = "build_options", .module = options.createModule() },
         },
     });
 

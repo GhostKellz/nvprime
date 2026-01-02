@@ -75,32 +75,110 @@ pub fn getSummary(device_index: u32) !ClockSummary {
     };
 }
 
-// Note: Setting clocks requires nvidia-smi or direct NVML API calls that may need
-// special permissions. The following are stubs for future implementation:
+// Clock control via nvidia-smi (requires root/sudo or appropriate permissions)
+
+/// Run nvidia-smi command and return success/failure
+fn runNvidiaSmi(args: []const []const u8) !void {
+    var argv = std.ArrayList([]const u8).init(std.heap.page_allocator);
+    defer argv.deinit();
+
+    try argv.append("nvidia-smi");
+    for (args) |arg| {
+        try argv.append(arg);
+    }
+
+    var child = std.process.Child.init(argv.items, std.heap.page_allocator);
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+
+    try child.spawn();
+    const result = try child.wait();
+
+    if (result.Exited != 0) {
+        return error.NvidiaSmiError;
+    }
+}
 
 /// Set GPU clock range (requires elevated permissions)
+/// Uses nvidia-smi -lgc min,max to lock GPU clocks
 pub fn setGpuClock(device_index: u32, config: ClockConfig) !void {
-    _ = device_index;
-    _ = config;
-    // TODO: Implement via nvidia-smi or NVML clock lock APIs
-    // nvmlDeviceSetGpuLockedClocks or nvidia-smi -lgc
-    return error.NotSupported;
+    var buf: [64]u8 = undefined;
+    var id_buf: [16]u8 = undefined;
+
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+
+    // Build clock range string
+    const clock_str = blk: {
+        if (config.min_mhz != null and config.max_mhz != null) {
+            break :blk std.fmt.bufPrint(&buf, "{d},{d}", .{ config.min_mhz.?, config.max_mhz.? }) catch return error.FormatError;
+        } else if (config.max_mhz != null) {
+            // Lock to single frequency
+            break :blk std.fmt.bufPrint(&buf, "{d},{d}", .{ config.max_mhz.?, config.max_mhz.? }) catch return error.FormatError;
+        } else if (config.min_mhz != null) {
+            break :blk std.fmt.bufPrint(&buf, "{d},", .{config.min_mhz.?}) catch return error.FormatError;
+        } else {
+            return error.InvalidConfig;
+        }
+    };
+
+    try runNvidiaSmi(&.{ "-i", id_str, "-lgc", clock_str });
 }
 
-/// Set memory clock (requires elevated permissions)
+/// Set memory clock range (requires elevated permissions)
+/// Uses nvidia-smi -lmc min,max to lock memory clocks
 pub fn setMemoryClock(device_index: u32, config: ClockConfig) !void {
-    _ = device_index;
-    _ = config;
-    // TODO: Implement via nvidia-smi or NVML
-    // nvmlDeviceSetMemoryLockedClocks or nvidia-smi -lmc
-    return error.NotSupported;
+    var buf: [64]u8 = undefined;
+    var id_buf: [16]u8 = undefined;
+
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+
+    const clock_str = blk: {
+        if (config.min_mhz != null and config.max_mhz != null) {
+            break :blk std.fmt.bufPrint(&buf, "{d},{d}", .{ config.min_mhz.?, config.max_mhz.? }) catch return error.FormatError;
+        } else if (config.max_mhz != null) {
+            break :blk std.fmt.bufPrint(&buf, "{d},{d}", .{ config.max_mhz.?, config.max_mhz.? }) catch return error.FormatError;
+        } else {
+            return error.InvalidConfig;
+        }
+    };
+
+    try runNvidiaSmi(&.{ "-i", id_str, "-lmc", clock_str });
 }
 
-/// Reset clocks to default
+/// Reset GPU clocks to default (unlocked)
+/// Uses nvidia-smi -rgc to reset GPU clock locks
+pub fn resetGpuClocks(device_index: u32) !void {
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+    try runNvidiaSmi(&.{ "-i", id_str, "-rgc" });
+}
+
+/// Reset memory clocks to default (unlocked)
+/// Uses nvidia-smi -rmc to reset memory clock locks
+pub fn resetMemoryClocks(device_index: u32) !void {
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+    try runNvidiaSmi(&.{ "-i", id_str, "-rmc" });
+}
+
+/// Reset all clocks to default
 pub fn resetClocks(device_index: u32) !void {
-    _ = device_index;
-    // TODO: nvmlDeviceResetGpuLockedClocks / nvidia-smi -rgc
-    return error.NotSupported;
+    try resetGpuClocks(device_index);
+    try resetMemoryClocks(device_index);
+}
+
+/// Enable persistence mode (keeps driver loaded, reduces latency)
+pub fn enablePersistenceMode(device_index: u32) !void {
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+    try runNvidiaSmi(&.{ "-i", id_str, "-pm", "1" });
+}
+
+/// Disable persistence mode
+pub fn disablePersistenceMode(device_index: u32) !void {
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+    try runNvidiaSmi(&.{ "-i", id_str, "-pm", "0" });
 }
 
 test "clock summary" {

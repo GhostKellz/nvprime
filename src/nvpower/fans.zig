@@ -31,17 +31,72 @@ pub const FanMode = enum {
     }
 };
 
+/// Query fan info via nvidia-smi
+fn queryNvidiaSmi(device_index: u32, query: []const u8) u32 {
+    const allocator = std.heap.page_allocator;
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return 0;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-smi", "-i", id_str, "--query-gpu", query, "--format=csv,noheader,nounits" },
+    }) catch return 0;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) return 0;
+
+    const output = std.mem.trim(u8, result.stdout, " \t\n\r");
+    return std.fmt.parseInt(u32, output, 10) catch 0;
+}
+
+/// Count number of fans via nvidia-settings
+fn getFanCount(device_index: u32) u32 {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-settings", "-t", "-q", "fans" },
+    }) catch return 1;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Count lines that contain our GPU index
+    var count: u32 = 0;
+    var iter = std.mem.splitScalar(u8, result.stdout, '\n');
+    var target_buf: [32]u8 = undefined;
+    const target = std.fmt.bufPrint(&target_buf, "[gpu:{d}]", .{device_index}) catch return 1;
+
+    while (iter.next()) |line| {
+        if (std.mem.indexOf(u8, line, target) != null) {
+            count += 1;
+        }
+    }
+
+    return if (count > 0) count else 1;
+}
+
 /// Get current fan state
 pub fn getState(device_index: u32) !FanState {
     const device = try nvml.getDeviceByIndex(device_index);
     const speed = nvml.getDeviceFanSpeed(device) catch 0;
 
+    // Query fan speed via nvidia-smi as backup and for RPM estimation
+    const smi_speed = queryNvidiaSmi(device_index, "fan.speed");
+    const actual_speed = if (speed > 0) speed else smi_speed;
+
+    // Estimate RPM from percentage (typical max is ~2500-3500 RPM for GPU fans)
+    const estimated_rpm = actual_speed * 30; // Rough estimate: 100% = 3000 RPM
+
+    // Get fan count
+    const fan_count = getFanCount(device_index);
+
     return FanState{
-        .speed_percent = speed,
-        .speed_rpm = 0, // TODO: query if available
-        .target_percent = speed,
+        .speed_percent = actual_speed,
+        .speed_rpm = estimated_rpm,
+        .target_percent = actual_speed,
         .mode = .auto,
-        .fan_count = 1, // TODO: query actual fan count
+        .fan_count = fan_count,
     };
 }
 
@@ -51,22 +106,49 @@ pub fn getSpeed(device_index: u32) !u32 {
     return nvml.getDeviceFanSpeed(device);
 }
 
+/// Run nvidia-settings assignment
+fn assignNvidiaSettings(assignment: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+
+    var child = std.process.Child.init(
+        &.{ "nvidia-settings", "-a", assignment },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    child.spawn() catch return error.NvidiaSettingsError;
+    const result = child.wait() catch return error.NvidiaSettingsError;
+    if (result.Exited != 0) return error.NvidiaSettingsError;
+}
+
 /// Set manual fan speed (requires elevated permissions + Coolbits)
+/// Note: Requires Coolbits=4 or Coolbits=28 in xorg.conf
 pub fn setSpeed(device_index: u32, speed_percent: u32) !void {
-    _ = device_index;
-    _ = speed_percent;
-    // NVML doesn't support fan speed setting on consumer cards
-    // Would need nvidia-settings with Coolbits enabled
-    // nvidia-settings -a "[gpu:0]/GPUFanControlState=1"
-    // nvidia-settings -a "[fan:0]/GPUTargetFanSpeed=XX"
-    return error.NotSupported;
+    const clamped = @min(speed_percent, 100);
+    var buf: [128]u8 = undefined;
+
+    // First enable manual fan control
+    const control_assign = std.fmt.bufPrint(&buf, "[gpu:{d}]/GPUFanControlState=1", .{device_index}) catch return error.FormatError;
+    try assignNvidiaSettings(control_assign);
+
+    // Set fan speed for all fans on this GPU
+    var fan_buf: [128]u8 = undefined;
+    const fan_count = getFanCount(device_index);
+
+    for (0..fan_count) |fan_idx| {
+        const fan_assign = std.fmt.bufPrint(&fan_buf, "[fan:{d}]/GPUTargetFanSpeed={d}", .{ fan_idx, clamped }) catch continue;
+        assignNvidiaSettings(fan_assign) catch {};
+    }
 }
 
 /// Enable automatic fan control
 pub fn setAuto(device_index: u32) !void {
-    _ = device_index;
-    // nvidia-settings -a "[gpu:0]/GPUFanControlState=0"
-    return error.NotSupported;
+    var buf: [128]u8 = undefined;
+
+    // Disable manual fan control (return to auto)
+    const assign = std.fmt.bufPrint(&buf, "[gpu:{d}]/GPUFanControlState=0", .{device_index}) catch return error.FormatError;
+    try assignNvidiaSettings(assign);
 }
 
 /// Fan curve point

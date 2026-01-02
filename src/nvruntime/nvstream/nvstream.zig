@@ -567,10 +567,36 @@ pub fn getStats() ?StreamStats {
     return null;
 }
 
+/// Common paths for NVIDIA FBC library
+const NVFBC_LIB_PATHS = [_][]const u8{
+    "/usr/lib/libnvidia-fbc.so.1",
+    "/usr/lib64/libnvidia-fbc.so.1",
+    "/usr/lib/x86_64-linux-gnu/libnvidia-fbc.so.1",
+    "/opt/nvidia/lib/libnvidia-fbc.so.1",
+};
+
 /// Check if NVFBC capture is available
 pub fn isNvfbcAvailable() bool {
-    // TODO: Check for libnvidia-fbc.so
-    return true;
+    // Check standard library paths for NVFBC
+    for (NVFBC_LIB_PATHS) |path| {
+        if (std.fs.cwd().access(path, .{})) |_| {
+            return true;
+        } else |_| {}
+    }
+
+    // Check LD_LIBRARY_PATH locations
+    if (std.posix.getenv("LD_LIBRARY_PATH")) |ld_path| {
+        var path_buf: [512]u8 = undefined;
+        var iter = std.mem.splitScalar(u8, ld_path, ':');
+        while (iter.next()) |dir| {
+            const lib_path = std.fmt.bufPrint(&path_buf, "{s}/libnvidia-fbc.so.1", .{dir}) catch continue;
+            if (std.fs.cwd().access(lib_path, .{})) |_| {
+                return true;
+            } else |_| {}
+        }
+    }
+
+    return false;
 }
 
 /// Check if streaming is supported on this system

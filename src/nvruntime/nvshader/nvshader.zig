@@ -55,12 +55,31 @@ pub const CachePreset = enum {
     }
 };
 
+const std = @import("std");
+const fs = std.fs;
+const posix = std.posix;
+
+/// Common shader cache locations relative to home directory
+const CACHE_PATHS = [_][]const u8{
+    ".cache/dxvk",
+    ".cache/vkd3d-proton",
+    ".nv/ComputeCache",
+    ".cache/mesa_shader_cache",
+    ".cache/nvidia/GLCache",
+    ".cache/radv_builtin_shaders64",
+};
+
 /// Quick check: are there any shader caches on the system?
 pub fn hasCaches() bool {
-    // TODO: Check common cache locations like:
-    // ~/.cache/dxvk/
-    // ~/.cache/vkd3d-proton/
-    // ~/.nv/ComputeCache/
-    // ~/.cache/mesa_shader_cache/
-    return true; // Optimistic default
+    const home = posix.getenv("HOME") orelse return false;
+
+    var path_buf: [512]u8 = undefined;
+    for (CACHE_PATHS) |cache_path| {
+        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ home, cache_path }) catch continue;
+        if (fs.cwd().access(full_path, .{})) |_| {
+            return true;
+        } else |_| {}
+    }
+
+    return false;
 }

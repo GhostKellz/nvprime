@@ -65,20 +65,38 @@ pub const NVSDK_NGX_Handle = opaque {};
 pub const NVSDK_NGX_Parameter = opaque {};
 
 // NGX SDK function pointers (loaded dynamically)
+// Based on NVSDK_NGX_VULKAN_* exports from libnvidia-ngx.so
 pub const NgxFunctions = struct {
+    // Vulkan initialization
     init: ?*const fn (
         app_id: u64,
-        path: [*:0]const u8,
-        path_len: usize,
+        app_data_path: [*:0]const u8,
+        instance: ?*anyopaque, // VkInstance
+        physical_device: ?*anyopaque, // VkPhysicalDevice
+        device: ?*anyopaque, // VkDevice
+        vk_get_instance_proc_addr: ?*anyopaque,
+        vk_get_device_proc_addr: ?*anyopaque,
+        creation_node_mask: u32,
+        visibility_node_mask: u32,
     ) callconv(.C) NVSDK_NGX_Result = null,
 
     shutdown: ?*const fn () callconv(.C) NVSDK_NGX_Result = null,
+    shutdown1: ?*const fn (?*anyopaque) callconv(.C) NVSDK_NGX_Result = null,
 
     get_capability_parameters: ?*const fn (
         *?*NVSDK_NGX_Parameter,
     ) callconv(.C) NVSDK_NGX_Result = null,
 
+    allocate_parameters: ?*const fn (
+        *?*NVSDK_NGX_Parameter,
+    ) callconv(.C) NVSDK_NGX_Result = null,
+
+    destroy_parameters: ?*const fn (
+        *NVSDK_NGX_Parameter,
+    ) callconv(.C) NVSDK_NGX_Result = null,
+
     create_feature: ?*const fn (
+        cmd_list: ?*anyopaque, // VkCommandBuffer
         feature: NVSDK_NGX_Feature,
         params: *NVSDK_NGX_Parameter,
         handle: *?*NVSDK_NGX_Handle,
@@ -89,9 +107,27 @@ pub const NgxFunctions = struct {
     ) callconv(.C) NVSDK_NGX_Result = null,
 
     evaluate: ?*const fn (
+        cmd_list: ?*anyopaque, // VkCommandBuffer
         handle: *NVSDK_NGX_Handle,
         params: *NVSDK_NGX_Parameter,
+        callback: ?*anyopaque,
     ) callconv(.C) NVSDK_NGX_Result = null,
+
+    get_feature_requirements: ?*const fn (
+        feature: NVSDK_NGX_Feature,
+        requirements: *NgxFeatureRequirements,
+    ) callconv(.C) NVSDK_NGX_Result = null,
+
+    // Library handle for cleanup
+    lib_handle: ?std.DynLib = null,
+};
+
+/// NGX feature requirements structure
+pub const NgxFeatureRequirements = extern struct {
+    flags: u32 = 0,
+    required_gpu_arch: u32 = 0,
+    min_driver_version_major: u32 = 0,
+    min_driver_version_minor: u32 = 0,
 };
 
 // ============================================================================
@@ -388,58 +424,216 @@ pub const DlssContext = struct {
 
     /// Cleanup resources
     pub fn deinit(self: *Self) void {
+        // Release NGX feature handles
         if (self.ngx_sr_handle) |handle| {
             if (self.ngx_functions.release_feature) |release| {
                 _ = release(handle);
             }
+            self.ngx_sr_handle = null;
         }
         if (self.ngx_fg_handle) |handle| {
             if (self.ngx_functions.release_feature) |release| {
                 _ = release(handle);
             }
+            self.ngx_fg_handle = null;
         }
+        if (self.ngx_rr_handle) |handle| {
+            if (self.ngx_functions.release_feature) |release| {
+                _ = release(handle);
+            }
+            self.ngx_rr_handle = null;
+        }
+
+        // Destroy parameters
+        if (self.ngx_params) |params| {
+            if (self.ngx_functions.destroy_parameters) |destroy| {
+                _ = destroy(params);
+            }
+            self.ngx_params = null;
+        }
+
+        // Shutdown NGX
         if (self.ngx_functions.shutdown) |shutdown| {
             _ = shutdown();
         }
+
+        // Close library handle
+        if (self.ngx_functions.lib_handle) |*lib| {
+            lib.close();
+            self.ngx_functions.lib_handle = null;
+        }
+
         self.initialized = false;
     }
 
     fn loadNgxSdk(self: *Self) !void {
-        // TODO: Load _nvngx.dll / libnvidia-ngx.so dynamically
-        // On Linux, NGX is typically available via Proton or native Vulkan
-        _ = self;
+        // Try to load libnvidia-ngx.so dynamically
+        // On Linux with driver 590+, this provides DLSS 4.x support
+        const lib_paths = [_][]const u8{
+            "libnvidia-ngx.so.1",
+            "libnvidia-ngx.so",
+            "/usr/lib/libnvidia-ngx.so.1",
+            "/usr/lib/libnvidia-ngx.so",
+            "/usr/lib64/libnvidia-ngx.so.1",
+        };
 
-        // For now, stub - real implementation would:
-        // 1. dlopen("libnvidia-ngx.so.1")
-        // 2. dlsym all required functions
-        // 3. Call NVSDK_NGX_Init()
+        var lib: ?std.DynLib = null;
+        for (lib_paths) |path| {
+            lib = std.DynLib.open(path) catch continue;
+            break;
+        }
+
+        if (lib == null) {
+            std.log.warn("NGX SDK library not found, DLSS features unavailable", .{});
+            return error.NgxNotFound;
+        }
+
+        var dynlib = lib.?;
+        self.ngx_functions.lib_handle = dynlib;
+
+        // Resolve Vulkan-specific NGX functions
+        self.ngx_functions.init = dynlib.lookup(
+            *const fn (u64, [*:0]const u8, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, u32, u32) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_Init",
+        );
+
+        self.ngx_functions.shutdown = dynlib.lookup(
+            *const fn () callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_Shutdown",
+        );
+
+        self.ngx_functions.shutdown1 = dynlib.lookup(
+            *const fn (?*anyopaque) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_Shutdown1",
+        );
+
+        self.ngx_functions.get_capability_parameters = dynlib.lookup(
+            *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_GetCapabilityParameters",
+        );
+
+        self.ngx_functions.allocate_parameters = dynlib.lookup(
+            *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_AllocateParameters",
+        );
+
+        self.ngx_functions.destroy_parameters = dynlib.lookup(
+            *const fn (*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_DestroyParameters",
+        );
+
+        self.ngx_functions.create_feature = dynlib.lookup(
+            *const fn (?*anyopaque, NVSDK_NGX_Feature, *NVSDK_NGX_Parameter, *?*NVSDK_NGX_Handle) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_CreateFeature",
+        );
+
+        self.ngx_functions.release_feature = dynlib.lookup(
+            *const fn (*NVSDK_NGX_Handle) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_ReleaseFeature",
+        );
+
+        self.ngx_functions.evaluate = dynlib.lookup(
+            *const fn (?*anyopaque, *NVSDK_NGX_Handle, *NVSDK_NGX_Parameter, ?*anyopaque) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_EvaluateFeature",
+        );
+
+        self.ngx_functions.get_feature_requirements = dynlib.lookup(
+            *const fn (NVSDK_NGX_Feature, *NgxFeatureRequirements) callconv(.C) NVSDK_NGX_Result,
+            "NVSDK_NGX_VULKAN_GetFeatureRequirements",
+        );
+
+        // Check if we have the minimum required functions
+        if (self.ngx_functions.get_capability_parameters == null) {
+            std.log.warn("NGX SDK missing required functions", .{});
+            return error.NgxNotFound;
+        }
+
+        std.log.info("NGX SDK loaded successfully", .{});
     }
 
     fn queryCapabilities(self: *Self) void {
-        // TODO: Query real GPU capabilities via NGX
-        // For development, assume RTX 50 series capabilities
-        self.capabilities = GpuCapabilities{
-            .supports_dlss_sr = true,
-            .supports_dlss_fg = true,
-            .supports_dlss_rr = true,
-            .supports_dlss_mfg = true,
-            .supports_reflex = true,
-            .supports_video_sr = true,
-            .supports_video_hdr = true,
-            .max_render_width = 7680,
-            .max_render_height = 4320,
-            .min_render_width = 128,
-            .min_render_height = 128,
-            .tensor_core_gen = 6, // Blackwell
-            .driver_version = 570,
-        };
+        // Try to query real capabilities via NGX if available
+        if (self.ngx_functions.get_feature_requirements) |get_reqs| {
+            // Check DLSS Super Resolution support
+            var sr_reqs: NgxFeatureRequirements = .{};
+            const sr_result = get_reqs(.super_sampling, &sr_reqs);
+            self.capabilities.supports_dlss_sr = sr_result.isSuccess();
 
-        self.version = DlssVersion{
-            .major = 4,
-            .minor = 0,
-            .patch = 0,
-            .build = 1,
-        };
+            // Check Frame Generation support (RTX 40+)
+            var fg_reqs: NgxFeatureRequirements = .{};
+            const fg_result = get_reqs(.frame_generation, &fg_reqs);
+            self.capabilities.supports_dlss_fg = fg_result.isSuccess();
+
+            // Check Ray Reconstruction support
+            var rr_reqs: NgxFeatureRequirements = .{};
+            const rr_result = get_reqs(.ray_reconstruction, &rr_reqs);
+            self.capabilities.supports_dlss_rr = rr_result.isSuccess();
+
+            // Infer tensor core generation from driver requirements
+            if (fg_reqs.required_gpu_arch >= 0x89) { // Ada Lovelace
+                self.capabilities.tensor_core_gen = 5;
+            } else if (sr_reqs.required_gpu_arch >= 0x86) { // Ampere
+                self.capabilities.tensor_core_gen = 4;
+            } else if (sr_reqs.required_gpu_arch >= 0x75) { // Turing
+                self.capabilities.tensor_core_gen = 3;
+            }
+
+            self.capabilities.driver_version = sr_reqs.min_driver_version_major;
+
+            std.log.info("NGX capabilities: SR={} FG={} RR={} arch={x}", .{
+                self.capabilities.supports_dlss_sr,
+                self.capabilities.supports_dlss_fg,
+                self.capabilities.supports_dlss_rr,
+                sr_reqs.required_gpu_arch,
+            });
+        } else {
+            // Fallback: assume RTX 50 series capabilities for development
+            std.log.info("NGX API unavailable, using fallback capabilities", .{});
+            self.capabilities = GpuCapabilities{
+                .supports_dlss_sr = true,
+                .supports_dlss_fg = true,
+                .supports_dlss_rr = true,
+                .supports_dlss_mfg = true,
+                .supports_reflex = true,
+                .supports_video_sr = true,
+                .supports_video_hdr = true,
+                .max_render_width = 7680,
+                .max_render_height = 4320,
+                .min_render_width = 128,
+                .min_render_height = 128,
+                .tensor_core_gen = 6, // Blackwell
+                .driver_version = 590,
+            };
+        }
+
+        // Set resolution limits (common for all RTX cards)
+        self.capabilities.max_render_width = 7680;
+        self.capabilities.max_render_height = 4320;
+        self.capabilities.min_render_width = 128;
+        self.capabilities.min_render_height = 128;
+
+        // Reflex is available on all NVIDIA GPUs
+        self.capabilities.supports_reflex = true;
+
+        // RTX Video features available on RTX 30+
+        if (self.capabilities.tensor_core_gen >= 4) {
+            self.capabilities.supports_video_sr = true;
+            self.capabilities.supports_video_hdr = true;
+        }
+
+        // Multi-frame gen is RTX 50+ only
+        self.capabilities.supports_dlss_mfg = self.capabilities.tensor_core_gen >= 6;
+
+        // Set DLSS version based on capabilities
+        if (self.capabilities.supports_dlss_mfg) {
+            self.version = DlssVersion{ .major = 4, .minor = 0, .patch = 0, .build = 1 };
+        } else if (self.capabilities.supports_dlss_rr) {
+            self.version = DlssVersion{ .major = 3, .minor = 7, .patch = 0, .build = 1 };
+        } else if (self.capabilities.supports_dlss_fg) {
+            self.version = DlssVersion{ .major = 3, .minor = 0, .patch = 0, .build = 1 };
+        } else if (self.capabilities.supports_dlss_sr) {
+            self.version = DlssVersion{ .major = 2, .minor = 5, .patch = 0, .build = 1 };
+        }
     }
 
     fn validateConfig(self: *Self) DlssError!void {
@@ -659,10 +853,30 @@ pub const ReflexContext = struct {
 // Public API
 // ============================================================================
 
-/// Check DLSS availability
+/// Check DLSS availability (checks for NGX library)
 pub fn isAvailable() bool {
-    // TODO: Actually check for NGX SDK and compatible GPU
-    return true;
+    // Try to load NGX library to check availability
+    const lib_paths = [_][]const u8{
+        "libnvidia-ngx.so.1",
+        "libnvidia-ngx.so",
+        "/usr/lib/libnvidia-ngx.so.1",
+    };
+
+    for (lib_paths) |path| {
+        if (std.DynLib.open(path)) |lib| {
+            // Library found, check for required symbol
+            const has_caps = lib.lookup(
+                *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+                "NVSDK_NGX_VULKAN_GetCapabilityParameters",
+            ) != null;
+            var lib_copy = lib;
+            lib_copy.close();
+            if (has_caps) return true;
+        } else |_| {
+            continue;
+        }
+    }
+    return false;
 }
 
 /// Check if specific DLSS feature is available

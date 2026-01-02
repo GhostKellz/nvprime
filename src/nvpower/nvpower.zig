@@ -74,26 +74,51 @@ pub const FanMode = enum {
 pub fn getState(device_index: u32) !PowerState {
     const device = try nvml.getDeviceByIndex(device_index);
 
+    // Get power info from limits module
+    const power_info = limits.getInfo(device_index) catch limits.PowerLimitInfo{
+        .current_w = 0,
+        .default_w = 0,
+        .min_w = 0,
+        .max_w = 0,
+        .enforced_w = 0,
+    };
+
+    // Get thermal info from thermals module
+    const thermal_state = thermals.getState(device_index) catch thermals.ThermalState{
+        .gpu_temp_c = 0,
+        .memory_temp_c = 0,
+        .hotspot_temp_c = 0,
+        .target_temp_c = 83,
+        .slowdown_temp_c = 83,
+        .shutdown_temp_c = 92,
+    };
+
+    // Get fan info from fans module
+    const fan_state = fans.getState(device_index) catch fans.FanState{
+        .speed_percent = 0,
+        .speed_rpm = 0,
+        .target_percent = 0,
+        .mode = .auto,
+        .fan_count = 1,
+    };
+
     const power = nvml.getDevicePowerUsage(device) catch 0;
-    const power_limit = nvml.getDevicePowerLimit(device) catch 0;
-    const temp = nvml.getDeviceTemperature(device, nvml.TEMPERATURE_GPU) catch 0;
-    const fan_speed = nvml.getDeviceFanSpeed(device) catch 0;
 
     return PowerState{
         .power_draw_w = @as(f32, @floatFromInt(power)) / 1000.0,
-        .power_limit_w = @as(f32, @floatFromInt(power_limit)) / 1000.0,
-        .power_limit_default_w = @as(f32, @floatFromInt(power_limit)) / 1000.0, // TODO: query actual default
-        .power_limit_min_w = @as(f32, @floatFromInt(power_limit)) * 0.7 / 1000.0, // Estimate
-        .power_limit_max_w = @as(f32, @floatFromInt(power_limit)) * 1.1 / 1000.0, // Estimate
-        .gpu_temp_c = temp,
-        .memory_temp_c = 0, // Would need memory temp sensor query
-        .hotspot_temp_c = 0, // Would need hotspot query
-        .thermal_target_c = 83, // Typical NVIDIA target
-        .thermal_slowdown_c = 83, // Typical slowdown point
-        .thermal_shutdown_c = 92, // Typical shutdown point
-        .fan_speed_percent = fan_speed,
-        .fan_speed_rpm = 0, // Would need RPM query
-        .fan_target_percent = fan_speed,
+        .power_limit_w = @as(f32, @floatFromInt(power_info.current_w)),
+        .power_limit_default_w = @as(f32, @floatFromInt(power_info.default_w)),
+        .power_limit_min_w = @as(f32, @floatFromInt(power_info.min_w)),
+        .power_limit_max_w = @as(f32, @floatFromInt(power_info.max_w)),
+        .gpu_temp_c = thermal_state.gpu_temp_c,
+        .memory_temp_c = thermal_state.memory_temp_c,
+        .hotspot_temp_c = thermal_state.hotspot_temp_c,
+        .thermal_target_c = thermal_state.target_temp_c,
+        .thermal_slowdown_c = thermal_state.slowdown_temp_c,
+        .thermal_shutdown_c = thermal_state.shutdown_temp_c,
+        .fan_speed_percent = fan_state.speed_percent,
+        .fan_speed_rpm = fan_state.speed_rpm,
+        .fan_target_percent = fan_state.target_percent,
         .fan_mode = .auto,
     };
 }

@@ -32,6 +32,27 @@ pub const PowerLimitInfo = struct {
     }
 };
 
+/// Query power info via nvidia-smi
+fn queryNvidiaSmiPower(device_index: u32, query: []const u8) u32 {
+    const allocator = std.heap.page_allocator;
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return 0;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-smi", "-i", id_str, "--query-gpu", query, "--format=csv,noheader,nounits" },
+    }) catch return 0;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) return 0;
+
+    const output = std.mem.trim(u8, result.stdout, " \t\n\r");
+    // nvidia-smi returns float, parse as float and convert to u32
+    const float_val = std.fmt.parseFloat(f64, output) catch 0.0;
+    return @intFromFloat(float_val);
+}
+
 /// Get power limit info
 pub fn getInfo(device_index: u32) !PowerLimitInfo {
     const device = try nvml.getDeviceByIndex(device_index);
@@ -40,13 +61,18 @@ pub fn getInfo(device_index: u32) !PowerLimitInfo {
     // NVML returns milliwatts
     const limit_w = limit / 1000;
 
-    // Estimate min/max (typically 70-110% of default)
+    // Query actual limits via nvidia-smi
+    const default_limit = queryNvidiaSmiPower(device_index, "power.default_limit");
+    const min_limit = queryNvidiaSmiPower(device_index, "power.min_limit");
+    const max_limit = queryNvidiaSmiPower(device_index, "power.max_limit");
+    const enforced = queryNvidiaSmiPower(device_index, "enforced.power.limit");
+
     return PowerLimitInfo{
         .current_w = limit_w,
-        .default_w = limit_w, // TODO: query actual default
-        .min_w = limit_w * 70 / 100,
-        .max_w = limit_w * 110 / 100,
-        .enforced_w = limit_w,
+        .default_w = if (default_limit > 0) default_limit else limit_w,
+        .min_w = if (min_limit > 0) min_limit else limit_w * 70 / 100,
+        .max_w = if (max_limit > 0) max_limit else limit_w * 110 / 100,
+        .enforced_w = if (enforced > 0) enforced else limit_w,
     };
 }
 

@@ -80,6 +80,14 @@ pub fn getState(device_index: u32) !EfficiencyState {
 
     const power_percent: u32 = @intCast(@min(100, power * 100 / power_limit));
 
+    // Calculate clock percent from current vs max clocks
+    const current_clock = nvml.getDeviceClock(device, nvml.CLOCK_GRAPHICS) catch 0;
+    const max_clock = nvml.getDeviceMaxClock(device, nvml.CLOCK_GRAPHICS) catch 1;
+    const clock_percent: u32 = if (max_clock > 0)
+        @intCast(@min(100, current_clock * 100 / max_clock))
+    else
+        100;
+
     // Simple efficiency score: high utilization with low power is good
     const efficiency = if (util.gpu > 0 and power_percent > 0)
         @min(100, util.gpu * 100 / power_percent)
@@ -89,7 +97,7 @@ pub fn getState(device_index: u32) !EfficiencyState {
     return EfficiencyState{
         .mode = .balanced, // Would need to track active mode
         .actual_power_percent = power_percent,
-        .actual_clock_percent = 100, // TODO: calculate from clocks
+        .actual_clock_percent = clock_percent,
         .efficiency_score = @intCast(efficiency),
     };
 }

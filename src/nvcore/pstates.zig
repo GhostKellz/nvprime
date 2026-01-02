@@ -79,19 +79,71 @@ pub const LockMode = enum {
 /// Lock P-state (requires elevated permissions)
 /// Note: This uses nvidia-smi under the hood
 pub fn lock(device_index: u32, mode: LockMode) !void {
-    _ = device_index;
-    _ = mode;
-    // TODO: Implement via nvidia-smi persistence mode / application clocks
-    // nvidia-smi -pm 1 to enable persistence
-    // nvidia-smi -ac <mem_clock>,<gpu_clock> to lock clocks
-    return error.NotSupported;
+    const allocator = std.heap.page_allocator;
+
+    // First enable persistence mode
+    {
+        var id_buf: [16]u8 = undefined;
+        const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+
+        var child = std.process.Child.init(
+            &.{ "nvidia-smi", "-i", id_str, "-pm", "1" },
+            allocator,
+        );
+        child.stderr_behavior = .Pipe;
+        child.stdout_behavior = .Pipe;
+        try child.spawn();
+        const result = try child.wait();
+        if (result.Exited != 0) return error.NvidiaSmiError;
+    }
+
+    // Get max clocks for the GPU
+    const device = try nvml.getDeviceByIndex(device_index);
+    const max_gpu = nvml.getDeviceMaxClock(device, nvml.CLOCK_GRAPHICS) catch 2100;
+    const max_mem = nvml.getDeviceMaxClock(device, nvml.CLOCK_MEM) catch 10000;
+
+    // Calculate target clocks based on mode
+    const target_gpu: u32 = switch (mode) {
+        .performance => max_gpu,
+        .balanced => max_gpu * 80 / 100,
+        .dynamic => return, // Don't lock for dynamic
+    };
+    const target_mem: u32 = max_mem;
+
+    // Set application clocks
+    var id_buf: [16]u8 = undefined;
+    var clock_buf: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+    const clock_str = std.fmt.bufPrint(&clock_buf, "{d},{d}", .{ target_mem, target_gpu }) catch return error.FormatError;
+
+    var child = std.process.Child.init(
+        &.{ "nvidia-smi", "-i", id_str, "-ac", clock_str },
+        allocator,
+    );
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    try child.spawn();
+    const result = try child.wait();
+    if (result.Exited != 0) return error.NvidiaSmiError;
 }
 
 /// Unlock P-state (return to dynamic)
 pub fn unlock(device_index: u32) !void {
-    _ = device_index;
-    // TODO: nvidia-smi -rac to reset application clocks
-    return error.NotSupported;
+    const allocator = std.heap.page_allocator;
+
+    var id_buf: [16]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
+
+    // Reset application clocks
+    var child = std.process.Child.init(
+        &.{ "nvidia-smi", "-i", id_str, "-rac" },
+        allocator,
+    );
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    try child.spawn();
+    const result = try child.wait();
+    if (result.Exited != 0) return error.NvidiaSmiError;
 }
 
 /// P-state history tracking
