@@ -498,6 +498,164 @@ pub fn configureVideoHdr(config: VideoHdr) !void {
     }
 }
 
+/// Auto-HDR for SDR games (RTX HDR)
+/// Converts SDR game output to HDR using AI tone mapping
+pub const AutoHdr = struct {
+    /// Enable Auto-HDR conversion
+    enabled: bool = false,
+    /// SDR content brightness in nits (default 203 = SDR reference white)
+    sdr_content_nits: u32 = 203,
+    /// Peak brightness target in nits
+    peak_nits: u32 = 1000,
+    /// Enable AI-enhanced tone mapping (RTX 40+ series)
+    ai_enhanced: bool = true,
+    /// Saturation boost (0-100, default 0 = no change)
+    saturation_boost: u8 = 0,
+    /// Inverse tone mapping strength (0-100)
+    itm_strength: u8 = 100,
+    /// Use wide gamut (BT.2020)
+    wide_gamut: bool = true,
+
+    /// Get Gamescope command line arguments for Auto-HDR
+    pub fn gamescopeArgs(self: AutoHdr, allocator: std.mem.Allocator) ![]const []const u8 {
+        var args = std.ArrayList([]const u8).init(allocator);
+        errdefer args.deinit();
+
+        if (!self.enabled) return args.toOwnedSlice();
+
+        try args.append("--hdr-enabled");
+
+        // SDR content brightness
+        const sdr_nits = try std.fmt.allocPrint(allocator, "{d}", .{self.sdr_content_nits});
+        try args.append("--hdr-sdr-content-nits");
+        try args.append(sdr_nits);
+
+        // ITM (Inverse Tone Mapping) for SDR-to-HDR
+        try args.append("--hdr-itm-enable");
+
+        // Target peak brightness
+        const peak = try std.fmt.allocPrint(allocator, "{d}", .{self.peak_nits});
+        try args.append("--hdr-itm-target-nits");
+        try args.append(peak);
+
+        // Wide gamut
+        if (self.wide_gamut) {
+            try args.append("--hdr-wide-gammut-for-sdr"); // Note: Gamescope typo is intentional
+        }
+
+        return args.toOwnedSlice();
+    }
+
+    /// Get environment variables for Auto-HDR
+    pub fn envVars(self: AutoHdr) [4][2][]const u8 {
+        return .{
+            .{ "DXVK_HDR", if (self.enabled) "1" else "0" },
+            .{ "ENABLE_HDR_WSI", if (self.enabled) "1" else "0" },
+            .{ "VKD3D_FEATURE_LEVEL", "12_2" }, // Required for HDR
+            .{ "PROTON_ENABLE_AMD_AGS", "0" }, // Disable AMD AGS for NVIDIA
+        };
+    }
+};
+
+/// Auto-HDR presets
+pub const AutoHdrPreset = enum {
+    /// Disabled
+    off,
+    /// Standard SDR-to-HDR conversion
+    standard,
+    /// Vivid colors and brightness
+    vivid,
+    /// Accurate SDR representation in HDR
+    accurate,
+    /// Maximum brightness and saturation
+    cinema,
+
+    pub fn config(self: AutoHdrPreset) AutoHdr {
+        return switch (self) {
+            .off => .{ .enabled = false },
+            .standard => .{
+                .enabled = true,
+                .sdr_content_nits = 203,
+                .peak_nits = 1000,
+                .ai_enhanced = true,
+                .saturation_boost = 0,
+                .itm_strength = 100,
+            },
+            .vivid => .{
+                .enabled = true,
+                .sdr_content_nits = 250,
+                .peak_nits = 1000,
+                .ai_enhanced = true,
+                .saturation_boost = 15,
+                .itm_strength = 100,
+            },
+            .accurate => .{
+                .enabled = true,
+                .sdr_content_nits = 100, // True SDR reference
+                .peak_nits = 400,
+                .ai_enhanced = false, // No AI adjustment
+                .saturation_boost = 0,
+                .itm_strength = 50, // Gentle expansion
+            },
+            .cinema => .{
+                .enabled = true,
+                .sdr_content_nits = 203,
+                .peak_nits = 1400, // Higher peak for cinema
+                .ai_enhanced = true,
+                .saturation_boost = 10,
+                .itm_strength = 100,
+            },
+        };
+    }
+
+    pub fn description(self: AutoHdrPreset) []const u8 {
+        return switch (self) {
+            .off => "Auto-HDR disabled",
+            .standard => "Standard SDR-to-HDR conversion",
+            .vivid => "Enhanced colors and brightness",
+            .accurate => "Accurate SDR representation",
+            .cinema => "Cinema-quality HDR",
+        };
+    }
+};
+
+/// Check if GPU supports Auto-HDR (RTX 20 series or newer)
+pub fn supportsAutoHdr() bool {
+    const allocator = std.heap.page_allocator;
+
+    // Query GPU generation via nvidia-smi
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const name = mem.trim(u8, result.stdout, "\n \t\r");
+
+    // RTX series support Auto-HDR
+    return mem.indexOf(u8, name, "RTX") != null;
+}
+
+/// Check if GPU supports AI-enhanced Auto-HDR (RTX 40/50 series)
+pub fn supportsAiAutoHdr() bool {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const name = mem.trim(u8, result.stdout, "\n \t\r");
+
+    // RTX 40 and 50 series support AI-enhanced Auto-HDR
+    return mem.indexOf(u8, name, "RTX 40") != null or
+        mem.indexOf(u8, name, "RTX 50") != null or
+        mem.indexOf(u8, name, "RTX 5") != null;
+}
+
 test "hdr format" {
     const hdr10 = HdrFormat.hdr10;
     try std.testing.expectEqual(@as(u32, 10), hdr10.minBitDepth());
@@ -505,4 +663,10 @@ test "hdr format" {
 
     const sdr = HdrFormat.sdr;
     try std.testing.expect(!sdr.supportsWideGamut());
+}
+
+test "auto hdr preset" {
+    const standard = AutoHdrPreset.standard.config();
+    try std.testing.expect(standard.enabled);
+    try std.testing.expectEqual(@as(u32, 203), standard.sdr_content_nits);
 }
