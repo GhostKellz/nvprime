@@ -134,6 +134,28 @@ pub const NgxFeatureRequirements = extern struct {
 // DLSS Types
 // ============================================================================
 
+/// DLSS model architecture type
+pub const DlssModelType = enum(u8) {
+    /// CNN-based model (DLSS 2.x - 3.x)
+    cnn,
+    /// 1st gen Transformer (DLSS 3.5+)
+    transformer_v1,
+    /// 2nd gen Transformer (DLSS 4.5+ "Blackwell" optimized)
+    transformer_v2,
+
+    pub fn description(self: DlssModelType) []const u8 {
+        return switch (self) {
+            .cnn => "CNN (Convolutional Neural Network)",
+            .transformer_v1 => "Transformer Gen 1",
+            .transformer_v2 => "Transformer Gen 2 (DLSS 4.5)",
+        };
+    }
+
+    pub fn requiresRtx50(self: DlssModelType) bool {
+        return self == .transformer_v2;
+    }
+};
+
 /// DLSS version info
 pub const DlssVersion = struct {
     major: u32,
@@ -154,6 +176,25 @@ pub const DlssVersion = struct {
     pub fn supportsMultiFrameGen(self: DlssVersion) bool {
         // DLSS 4.0+ supports multi frame generation (RTX 50)
         return self.major >= 4;
+    }
+
+    pub fn supportsDynamicMfg(self: DlssVersion) bool {
+        // DLSS 4.5+ supports Dynamic Multi Frame Generation
+        return self.major > 4 or (self.major == 4 and self.minor >= 5);
+    }
+
+    pub fn supportsTransformerV2(self: DlssVersion) bool {
+        // DLSS 4.5+ uses 2nd gen transformer model
+        return self.major > 4 or (self.major == 4 and self.minor >= 5);
+    }
+
+    pub fn getModelType(self: DlssVersion) DlssModelType {
+        if (self.supportsTransformerV2()) {
+            return .transformer_v2;
+        } else if (self.supportsRayReconstruction()) {
+            return .transformer_v1;
+        }
+        return .cnn;
     }
 
     pub fn toString(self: DlssVersion) [32]u8 {
@@ -231,10 +272,62 @@ pub const DlssMode = enum(u8) {
 /// Frame generation mode
 pub const FrameGenMode = enum(u8) {
     disabled,
-    enabled, // 1 generated frame per rendered
+    enabled, // 1 generated frame per rendered (DLSS 3)
     boost, // Adaptive frame generation
-    multi_2x, // RTX 50: 2x generated frames
-    multi_3x, // RTX 50: 3x generated frames
+    multi_2x, // RTX 50: 2x generated frames (DLSS 4)
+    multi_3x, // RTX 50: 3x generated frames (DLSS 4)
+    multi_4x, // RTX 50: 4x generated frames (DLSS 4.5)
+    dynamic, // DLSS 4.5: Dynamic MFG - auto-adjust to display refresh
+    dynamic_6x, // DLSS 4.5: Up to 6x generated frames for 4K@240Hz
+
+    pub fn multiplier(self: FrameGenMode) u8 {
+        return switch (self) {
+            .disabled => 0,
+            .enabled => 1,
+            .boost => 1,
+            .multi_2x => 2,
+            .multi_3x => 3,
+            .multi_4x => 4,
+            .dynamic => 4, // Dynamic averages ~4x
+            .dynamic_6x => 6,
+        };
+    }
+
+    pub fn requiresRtx50(self: FrameGenMode) bool {
+        return switch (self) {
+            .multi_2x, .multi_3x, .multi_4x, .dynamic, .dynamic_6x => true,
+            else => false,
+        };
+    }
+
+    pub fn description(self: FrameGenMode) []const u8 {
+        return switch (self) {
+            .disabled => "Frame Generation disabled",
+            .enabled => "Frame Generation (1 extra frame)",
+            .boost => "Frame Generation with GPU boost",
+            .multi_2x => "Multi Frame Gen 2x (RTX 50)",
+            .multi_3x => "Multi Frame Gen 3x (RTX 50)",
+            .multi_4x => "Multi Frame Gen 4x (RTX 50)",
+            .dynamic => "Dynamic MFG (DLSS 4.5, adapts to display)",
+            .dynamic_6x => "Dynamic MFG 6x (4K@240Hz target)",
+        };
+    }
+};
+
+/// Dynamic MFG configuration for DLSS 4.5+
+pub const DynamicMfgConfig = struct {
+    /// Target display refresh rate (for dynamic frame gen scaling)
+    target_refresh_hz: u32 = 165,
+    /// Minimum multiplier (1 = just SR, no frame gen)
+    min_multiplier: u8 = 1,
+    /// Maximum multiplier (2-6 depending on GPU)
+    max_multiplier: u8 = 4,
+    /// Latency threshold in ms - reduce MFG if exceeded
+    max_latency_ms: f32 = 20.0,
+    /// Enable automatic quality scaling with MFG
+    auto_quality_scale: bool = true,
+    /// Prefer lower latency over higher frame rate
+    prefer_low_latency: bool = false,
 };
 
 /// DLSS configuration
@@ -247,6 +340,67 @@ pub const DlssConfig = struct {
     auto_exposure: bool = true,
     hdr: bool = false,
     preset: DlssPreset = .default,
+    /// Dynamic MFG settings (DLSS 4.5+)
+    dynamic_mfg: DynamicMfgConfig = .{},
+    /// Force specific model type (null = auto-detect)
+    force_model: ?DlssModelType = null,
+
+    pub fn fromPreset(preset_name: []const u8) DlssConfig {
+        if (std.mem.eql(u8, preset_name, "ultra_performance")) {
+            return .{
+                .quality = .ultra_performance,
+                .frame_gen = .enabled,
+            };
+        } else if (std.mem.eql(u8, preset_name, "performance")) {
+            return .{
+                .quality = .performance,
+                .frame_gen = .enabled,
+            };
+        } else if (std.mem.eql(u8, preset_name, "balanced")) {
+            return .{
+                .quality = .balanced,
+                .frame_gen = .enabled,
+            };
+        } else if (std.mem.eql(u8, preset_name, "quality")) {
+            return .{
+                .quality = .quality,
+                .frame_gen = .disabled,
+            };
+        } else if (std.mem.eql(u8, preset_name, "mfg_2x")) {
+            return .{
+                .quality = .performance,
+                .frame_gen = .multi_2x,
+            };
+        } else if (std.mem.eql(u8, preset_name, "mfg_3x")) {
+            return .{
+                .quality = .performance,
+                .frame_gen = .multi_3x,
+            };
+        } else if (std.mem.eql(u8, preset_name, "mfg_4x")) {
+            return .{
+                .quality = .balanced,
+                .frame_gen = .multi_4x,
+            };
+        } else if (std.mem.eql(u8, preset_name, "dynamic")) {
+            return .{
+                .quality = .balanced,
+                .frame_gen = .dynamic,
+                .dynamic_mfg = .{
+                    .auto_quality_scale = true,
+                },
+            };
+        } else if (std.mem.eql(u8, preset_name, "max_fps")) {
+            return .{
+                .quality = .ultra_performance,
+                .frame_gen = .dynamic_6x,
+                .dynamic_mfg = .{
+                    .target_refresh_hz = 240,
+                    .max_multiplier = 6,
+                },
+            };
+        }
+        return .{}; // Default
+    }
 };
 
 /// DLSS preset (affects internal algorithms)
@@ -340,23 +494,130 @@ pub const VideoConfig = struct {
 // GPU Capabilities
 // ============================================================================
 
+/// GPU generation for feature support detection
+pub const GpuGeneration = enum(u8) {
+    unknown,
+    turing, // RTX 20 series (SM 7.5)
+    ampere, // RTX 30 series (SM 8.6)
+    ada_lovelace, // RTX 40 series (SM 8.9)
+    blackwell, // RTX 50 series (SM 10.0)
+
+    pub fn tensorCoreGen(self: GpuGeneration) u8 {
+        return switch (self) {
+            .unknown => 0,
+            .turing => 3,
+            .ampere => 4,
+            .ada_lovelace => 5,
+            .blackwell => 6,
+        };
+    }
+
+    pub fn supportsFrameGen(self: GpuGeneration) bool {
+        return self == .ada_lovelace or self == .blackwell;
+    }
+
+    pub fn supportsMultiFrameGen(self: GpuGeneration) bool {
+        return self == .blackwell;
+    }
+
+    pub fn supportsDynamicMfg(self: GpuGeneration) bool {
+        return self == .blackwell;
+    }
+
+    pub fn maxMfgMultiplier(self: GpuGeneration) u8 {
+        return switch (self) {
+            .blackwell => 6, // Up to 6x with Dynamic MFG
+            .ada_lovelace => 1, // DLSS 3 is 1 extra frame
+            else => 0,
+        };
+    }
+
+    pub fn name(self: GpuGeneration) []const u8 {
+        return switch (self) {
+            .unknown => "Unknown",
+            .turing => "Turing (RTX 20)",
+            .ampere => "Ampere (RTX 30)",
+            .ada_lovelace => "Ada Lovelace (RTX 40)",
+            .blackwell => "Blackwell (RTX 50)",
+        };
+    }
+};
+
 /// GPU feature support
 pub const GpuCapabilities = struct {
     supports_dlss_sr: bool = false, // RTX 20+
     supports_dlss_fg: bool = false, // RTX 40+
     supports_dlss_rr: bool = false, // RTX 40+ with DLSS 3.5+
     supports_dlss_mfg: bool = false, // RTX 50+
+    supports_dynamic_mfg: bool = false, // RTX 50+ with DLSS 4.5+
     supports_reflex: bool = false, // All NVIDIA
     supports_video_sr: bool = false, // RTX 30+
     supports_video_hdr: bool = false, // RTX 30+
+    supports_rtx_hdr: bool = false, // RTX 30+ Auto-HDR
 
     max_render_width: u32 = 0,
     max_render_height: u32 = 0,
     min_render_width: u32 = 0,
     min_render_height: u32 = 0,
 
+    gpu_generation: GpuGeneration = .unknown,
     tensor_core_gen: u8 = 0, // 0 = none, 3 = Turing, 4 = Ampere, 5 = Ada, 6 = Blackwell
     driver_version: u32 = 0,
+    model_type: DlssModelType = .cnn,
+
+    pub fn fromGeneration(gen: GpuGeneration) GpuCapabilities {
+        var caps = GpuCapabilities{
+            .gpu_generation = gen,
+            .tensor_core_gen = gen.tensorCoreGen(),
+        };
+
+        // Set capabilities based on generation
+        switch (gen) {
+            .blackwell => {
+                caps.supports_dlss_sr = true;
+                caps.supports_dlss_fg = true;
+                caps.supports_dlss_rr = true;
+                caps.supports_dlss_mfg = true;
+                caps.supports_dynamic_mfg = true;
+                caps.supports_reflex = true;
+                caps.supports_video_sr = true;
+                caps.supports_video_hdr = true;
+                caps.supports_rtx_hdr = true;
+                caps.model_type = .transformer_v2;
+            },
+            .ada_lovelace => {
+                caps.supports_dlss_sr = true;
+                caps.supports_dlss_fg = true;
+                caps.supports_dlss_rr = true;
+                caps.supports_reflex = true;
+                caps.supports_video_sr = true;
+                caps.supports_video_hdr = true;
+                caps.supports_rtx_hdr = true;
+                caps.model_type = .transformer_v1;
+            },
+            .ampere => {
+                caps.supports_dlss_sr = true;
+                caps.supports_reflex = true;
+                caps.supports_video_sr = true;
+                caps.supports_video_hdr = true;
+                caps.model_type = .cnn;
+            },
+            .turing => {
+                caps.supports_dlss_sr = true;
+                caps.supports_reflex = true;
+                caps.model_type = .cnn;
+            },
+            .unknown => {},
+        }
+
+        // Common limits
+        caps.max_render_width = 7680;
+        caps.max_render_height = 4320;
+        caps.min_render_width = 128;
+        caps.min_render_height = 128;
+
+        return caps;
+    }
 };
 
 // ============================================================================
@@ -587,45 +848,45 @@ pub const DlssContext = struct {
                 sr_reqs.required_gpu_arch,
             });
         } else {
-            // Fallback: assume RTX 50 series capabilities for development
-            std.log.info("NGX API unavailable, using fallback capabilities", .{});
-            self.capabilities = GpuCapabilities{
-                .supports_dlss_sr = true,
-                .supports_dlss_fg = true,
-                .supports_dlss_rr = true,
-                .supports_dlss_mfg = true,
-                .supports_reflex = true,
-                .supports_video_sr = true,
-                .supports_video_hdr = true,
-                .max_render_width = 7680,
-                .max_render_height = 4320,
-                .min_render_width = 128,
-                .min_render_height = 128,
-                .tensor_core_gen = 6, // Blackwell
-                .driver_version = 590,
+            // Fallback: detect GPU generation from environment or assume RTX 50
+            const detected_gen = detectGpuGeneration();
+            std.log.info("NGX API unavailable, using fallback for {} GPU", .{detected_gen.name()});
+            self.capabilities = GpuCapabilities.fromGeneration(detected_gen);
+            self.capabilities.driver_version = 590;
+        }
+
+        // Infer GPU generation from tensor core gen if not set
+        if (self.capabilities.gpu_generation == .unknown) {
+            self.capabilities.gpu_generation = switch (self.capabilities.tensor_core_gen) {
+                6 => .blackwell,
+                5 => .ada_lovelace,
+                4 => .ampere,
+                3 => .turing,
+                else => .unknown,
             };
         }
 
-        // Set resolution limits (common for all RTX cards)
-        self.capabilities.max_render_width = 7680;
-        self.capabilities.max_render_height = 4320;
-        self.capabilities.min_render_width = 128;
-        self.capabilities.min_render_height = 128;
+        // Set model type based on generation
+        self.capabilities.model_type = switch (self.capabilities.gpu_generation) {
+            .blackwell => .transformer_v2,
+            .ada_lovelace => .transformer_v1,
+            else => .cnn,
+        };
 
-        // Reflex is available on all NVIDIA GPUs
-        self.capabilities.supports_reflex = true;
-
-        // RTX Video features available on RTX 30+
-        if (self.capabilities.tensor_core_gen >= 4) {
-            self.capabilities.supports_video_sr = true;
-            self.capabilities.supports_video_hdr = true;
-        }
+        // Dynamic MFG is RTX 50+ with DLSS 4.5+
+        self.capabilities.supports_dynamic_mfg = self.capabilities.gpu_generation == .blackwell;
 
         // Multi-frame gen is RTX 50+ only
-        self.capabilities.supports_dlss_mfg = self.capabilities.tensor_core_gen >= 6;
+        self.capabilities.supports_dlss_mfg = self.capabilities.gpu_generation == .blackwell;
+
+        // RTX HDR (Auto-HDR) is RTX 30+ only
+        self.capabilities.supports_rtx_hdr = self.capabilities.tensor_core_gen >= 4;
 
         // Set DLSS version based on capabilities
-        if (self.capabilities.supports_dlss_mfg) {
+        if (self.capabilities.supports_dynamic_mfg) {
+            // RTX 50 with DLSS 4.5
+            self.version = DlssVersion{ .major = 4, .minor = 5, .patch = 0, .build = 1 };
+        } else if (self.capabilities.supports_dlss_mfg) {
             self.version = DlssVersion{ .major = 4, .minor = 0, .patch = 0, .build = 1 };
         } else if (self.capabilities.supports_dlss_rr) {
             self.version = DlssVersion{ .major = 3, .minor = 7, .patch = 0, .build = 1 };
@@ -634,6 +895,13 @@ pub const DlssContext = struct {
         } else if (self.capabilities.supports_dlss_sr) {
             self.version = DlssVersion{ .major = 2, .minor = 5, .patch = 0, .build = 1 };
         }
+
+        std.log.info("DLSS {s} initialized: model={s}, MFG={}, Dynamic={}", .{
+            if (self.version) |v| &v.toString() else "unknown",
+            self.capabilities.model_type.description(),
+            self.capabilities.supports_dlss_mfg,
+            self.capabilities.supports_dynamic_mfg,
+        });
     }
 
     fn validateConfig(self: *Self) DlssError!void {
@@ -853,6 +1121,72 @@ pub const ReflexContext = struct {
 // Public API
 // ============================================================================
 
+/// Detect GPU generation from PCI device info or environment
+pub fn detectGpuGeneration() GpuGeneration {
+    // Check for override environment variable
+    if (std.posix.getenv("DLSS_GPU_GEN")) |gen_str| {
+        const gen = std.mem.sliceTo(gen_str, 0);
+        if (std.mem.eql(u8, gen, "blackwell") or std.mem.eql(u8, gen, "50")) {
+            return .blackwell;
+        } else if (std.mem.eql(u8, gen, "ada") or std.mem.eql(u8, gen, "40")) {
+            return .ada_lovelace;
+        } else if (std.mem.eql(u8, gen, "ampere") or std.mem.eql(u8, gen, "30")) {
+            return .ampere;
+        } else if (std.mem.eql(u8, gen, "turing") or std.mem.eql(u8, gen, "20")) {
+            return .turing;
+        }
+    }
+
+    // Try to read GPU device ID from sysfs
+    const gpu_paths = [_][]const u8{
+        "/sys/class/drm/card0/device/device",
+        "/sys/class/drm/card1/device/device",
+    };
+
+    for (gpu_paths) |path| {
+        if (std.fs.openFileAbsolute(path, .{})) |file| {
+            defer file.close();
+            var buf: [32]u8 = undefined;
+            if (file.read(&buf)) |len| {
+                const device_id_str = std.mem.trim(u8, buf[0..len], " \n\r\t");
+                // Parse hex device ID (format: 0x2684 for RTX 50 series)
+                if (device_id_str.len > 2 and device_id_str[0] == '0' and device_id_str[1] == 'x') {
+                    if (std.fmt.parseInt(u16, device_id_str[2..], 16)) |device_id| {
+                        return detectGenerationFromDeviceId(device_id);
+                    } else |_| {}
+                }
+            } else |_| {}
+        } else |_| {}
+    }
+
+    // Default to RTX 50 (Blackwell) for development
+    return .blackwell;
+}
+
+/// Map NVIDIA device ID to GPU generation
+fn detectGenerationFromDeviceId(device_id: u16) GpuGeneration {
+    // RTX 50 series (Blackwell) - 0x26xx, 0x27xx
+    if (device_id >= 0x2600 and device_id < 0x2800) {
+        return .blackwell;
+    }
+    // RTX 40 series (Ada Lovelace) - 0x26xx, 0x27xx (subset), 0x28xx
+    if (device_id >= 0x2680 and device_id < 0x2700) {
+        return .ada_lovelace; // RTX 4090, 4080
+    }
+    if (device_id >= 0x2700 and device_id < 0x2800) {
+        return .ada_lovelace; // RTX 4070, etc.
+    }
+    // RTX 30 series (Ampere) - 0x22xx, 0x24xx, 0x25xx
+    if (device_id >= 0x2200 and device_id < 0x2600) {
+        return .ampere;
+    }
+    // RTX 20 series (Turing) - 0x1Exx, 0x1Fxx, 0x21xx
+    if (device_id >= 0x1E00 and device_id < 0x2200) {
+        return .turing;
+    }
+    return .unknown;
+}
+
 /// Check DLSS availability (checks for NGX library)
 pub fn isAvailable() bool {
     // Try to load NGX library to check availability
@@ -889,28 +1223,41 @@ pub fn isFeatureAvailable(feature: NVSDK_NGX_Feature) bool {
     };
 }
 
-/// Get DLSS version
+/// Get DLSS version based on detected GPU
 pub fn getVersion() ?DlssVersion {
-    return DlssVersion{
-        .major = 4,
-        .minor = 0,
-        .patch = 0,
-        .build = 1,
+    const gen = detectGpuGeneration();
+    return switch (gen) {
+        .blackwell => DlssVersion{ .major = 4, .minor = 5, .patch = 0, .build = 1 },
+        .ada_lovelace => DlssVersion{ .major = 3, .minor = 7, .patch = 0, .build = 1 },
+        .ampere => DlssVersion{ .major = 2, .minor = 5, .patch = 1, .build = 1 },
+        .turing => DlssVersion{ .major = 2, .minor = 4, .patch = 0, .build = 1 },
+        .unknown => null,
     };
 }
 
-/// Get GPU capabilities
+/// Get GPU capabilities based on detected generation
 pub fn getCapabilities() GpuCapabilities {
-    return GpuCapabilities{
-        .supports_dlss_sr = true,
-        .supports_dlss_fg = true,
-        .supports_dlss_rr = true,
-        .supports_dlss_mfg = true,
-        .supports_reflex = true,
-        .supports_video_sr = true,
-        .supports_video_hdr = true,
-        .tensor_core_gen = 6,
-        .driver_version = 570,
+    const gen = detectGpuGeneration();
+    return GpuCapabilities.fromGeneration(gen);
+}
+
+/// Get recommended frame gen mode for GPU and target refresh rate
+pub fn getRecommendedFrameGen(gen: GpuGeneration, target_refresh_hz: u32) FrameGenMode {
+    return switch (gen) {
+        .blackwell => blk: {
+            // RTX 50: Use Dynamic MFG for high refresh, multi_4x for 4K@120+
+            if (target_refresh_hz >= 240) {
+                break :blk .dynamic_6x;
+            } else if (target_refresh_hz >= 165) {
+                break :blk .dynamic;
+            } else if (target_refresh_hz >= 120) {
+                break :blk .multi_4x;
+            } else {
+                break :blk .multi_2x;
+            }
+        },
+        .ada_lovelace => .enabled, // RTX 40: Standard DLSS 3 frame gen
+        else => .disabled, // RTX 30 and below: No frame gen
     };
 }
 
@@ -939,12 +1286,74 @@ test "dlss version features" {
     const v3 = DlssVersion{ .major = 3, .minor = 0, .patch = 0 };
     try std.testing.expect(v3.supportsFrameGen());
     try std.testing.expect(!v3.supportsRayReconstruction());
+    try std.testing.expect(!v3.supportsDynamicMfg());
 
     const v35 = DlssVersion{ .major = 3, .minor = 5, .patch = 0 };
     try std.testing.expect(v35.supportsRayReconstruction());
+    try std.testing.expectEqual(DlssModelType.transformer_v1, v35.getModelType());
 
     const v4 = DlssVersion{ .major = 4, .minor = 0, .patch = 0 };
     try std.testing.expect(v4.supportsMultiFrameGen());
+    try std.testing.expect(!v4.supportsDynamicMfg());
+
+    const v45 = DlssVersion{ .major = 4, .minor = 5, .patch = 0 };
+    try std.testing.expect(v45.supportsDynamicMfg());
+    try std.testing.expect(v45.supportsTransformerV2());
+    try std.testing.expectEqual(DlssModelType.transformer_v2, v45.getModelType());
+}
+
+test "dlss model types" {
+    try std.testing.expect(!DlssModelType.cnn.requiresRtx50());
+    try std.testing.expect(!DlssModelType.transformer_v1.requiresRtx50());
+    try std.testing.expect(DlssModelType.transformer_v2.requiresRtx50());
+}
+
+test "frame gen modes" {
+    try std.testing.expectEqual(@as(u8, 1), FrameGenMode.enabled.multiplier());
+    try std.testing.expectEqual(@as(u8, 4), FrameGenMode.multi_4x.multiplier());
+    try std.testing.expectEqual(@as(u8, 6), FrameGenMode.dynamic_6x.multiplier());
+
+    try std.testing.expect(!FrameGenMode.enabled.requiresRtx50());
+    try std.testing.expect(FrameGenMode.multi_4x.requiresRtx50());
+    try std.testing.expect(FrameGenMode.dynamic.requiresRtx50());
+}
+
+test "gpu generation capabilities" {
+    const blackwell = GpuCapabilities.fromGeneration(.blackwell);
+    try std.testing.expect(blackwell.supports_dlss_mfg);
+    try std.testing.expect(blackwell.supports_dynamic_mfg);
+    try std.testing.expectEqual(DlssModelType.transformer_v2, blackwell.model_type);
+
+    const ada = GpuCapabilities.fromGeneration(.ada_lovelace);
+    try std.testing.expect(ada.supports_dlss_fg);
+    try std.testing.expect(!ada.supports_dlss_mfg);
+    try std.testing.expectEqual(DlssModelType.transformer_v1, ada.model_type);
+
+    const ampere = GpuCapabilities.fromGeneration(.ampere);
+    try std.testing.expect(ampere.supports_dlss_sr);
+    try std.testing.expect(!ampere.supports_dlss_fg);
+    try std.testing.expectEqual(DlssModelType.cnn, ampere.model_type);
+}
+
+test "dlss config presets" {
+    const dynamic = DlssConfig.fromPreset("dynamic");
+    try std.testing.expectEqual(FrameGenMode.dynamic, dynamic.frame_gen);
+    try std.testing.expect(dynamic.dynamic_mfg.auto_quality_scale);
+
+    const max_fps = DlssConfig.fromPreset("max_fps");
+    try std.testing.expectEqual(FrameGenMode.dynamic_6x, max_fps.frame_gen);
+    try std.testing.expectEqual(@as(u32, 240), max_fps.dynamic_mfg.target_refresh_hz);
+}
+
+test "recommended frame gen" {
+    // RTX 50 @ 240Hz should use dynamic_6x
+    try std.testing.expectEqual(FrameGenMode.dynamic_6x, getRecommendedFrameGen(.blackwell, 240));
+    // RTX 50 @ 165Hz should use dynamic
+    try std.testing.expectEqual(FrameGenMode.dynamic, getRecommendedFrameGen(.blackwell, 165));
+    // RTX 40 should always use standard frame gen
+    try std.testing.expectEqual(FrameGenMode.enabled, getRecommendedFrameGen(.ada_lovelace, 240));
+    // RTX 30 has no frame gen
+    try std.testing.expectEqual(FrameGenMode.disabled, getRecommendedFrameGen(.ampere, 165));
 }
 
 test "quality mode scale factors" {

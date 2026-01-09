@@ -1,0 +1,43 @@
+services:
+  nvdev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    container_name: nvprime-dev
+    network_mode: host
+    volumes:
+      # Mount host's Zig (read-only, same version as development)
+      - /opt/zig-0.16.0-dev:/opt/zig:ro
+      # Mount all nv* projects
+      - /data/projects/nvprime:/workspace/nvprime
+      - /data/projects/nvshader:/workspace/nvshader
+      - /data/projects/nvlatency:/workspace/nvlatency
+      - /data/projects/nvsync:/workspace/nvsync
+      - /data/projects/nvhud:/workspace/nvhud
+      - /data/projects/nvfury:/workspace/nvfury
+      - /data/projects/nvvk:/workspace/nvvk
+      - /data/projects/nvproton:/workspace/nvproton
+      - /data/projects/venom:/workspace/venom
+      - /data/projects/proton-NV:/workspace/proton-NV
+      - /data/projects/zeus:/workspace/zeus
+      # Zig cache for faster rebuilds
+      - zig-cache:/root/.cache/zig
+      # Cargo cache
+      - cargo-cache:/root/.cargo/registry
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # No GPU access needed for builds
+    # For GPU testing, add:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  zig-cache:
+  cargo-cache:
