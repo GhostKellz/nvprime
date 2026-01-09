@@ -46,7 +46,7 @@
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
-            .hash = "nvsync-0.2.0-yy7g7bAxAQADI6qnAa4ROud9yUwAGfb1wK8YHsPtU9wu",
+            .hash = "nvsync-0.2.0-yy7g7SSBAQD2Owvad-FlTVwxqOcFl550lZpQO9cyHk3Z",
         },
         .nvshader = .{
             .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
@@ -58,7 +58,7 @@
         },
         .ghostVK = .{
             .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
-            .hash = "ghostVK-0.0.0-bt87RygtAQCwoZ-My3l1x9AUuX5yOdy29EKydcbLqQX_",
+            .hash = "ghostVK-0.0.0-bt87R6cwAwD-3GKLFZMmh7TIOw2LOMRgjLPSy0ZgiaCZ",
         },
     },
     .paths = .{
