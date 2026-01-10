@@ -23,6 +23,11 @@
 
 NVPrime is the comprehensive NVIDIA subsystem layer for Linux — not just gaming, not just drivers, but everything NVIDIA touches on Linux. Think of it as AMD's ROCm, but broader: gaming, workstation, AI/compute, streaming, and creative workflows unified under one platform.
 
+> **⚠️ Experimental Library**
+>
+> NVPrime is under active development. APIs may change between versions.
+> Use in production at your own risk. Contributions welcome!
+
 ## Vision
 
 ```
@@ -178,18 +183,47 @@ try nvdisplay.vrr.setMode(.gsync_compatible);
 
 ### nvdlss - AI Features Gateway
 
+DLSS 4.5 support with Multi Frame Generation (RTX 40/50 series):
+
 ```zig
 const nvdlss = @import("nvprime").dlss;
 
-// Check DLSS support
-const caps = try nvdlss.getCapabilities();
-if (caps.dlss_supported) {
-    std.log.info("DLSS {s} supported", .{caps.dlss_version});
-}
+// Detect GPU generation and capabilities
+const gen = nvdlss.detectGpuGeneration();
+const caps = nvdlss.GpuCapabilities.fromGeneration(gen);
 
-// Reflex control
-try nvdlss.reflex.setMode(.boost);
-const latency = try nvdlss.reflex.getLatency();
+// DLSS 4.5 presets
+const config = nvdlss.DlssConfig.fromPreset("dynamic"); // RTX 50 Dynamic MFG
+
+// Frame generation modes
+config.frame_gen = .multi_4x;      // 4x frame gen (RTX 40+)
+config.frame_gen = .dynamic_6x;   // Dynamic up to 6x (RTX 50)
+
+// Recommended settings by GPU
+const recommended = nvdlss.getRecommendedFrameGen(gen, 165); // target 165Hz
+```
+
+### nvdisplay/hdr - Auto-HDR for SDR Games
+
+RTX HDR converts SDR game output to HDR:
+
+```zig
+const hdr = @import("nvprime").nvdisplay.hdr;
+
+// Auto-HDR presets
+const preset = hdr.AutoHdrPreset.vivid.config();
+
+// Gamescope integration
+const args = try preset.gamescopeArgs(allocator);
+// Returns: --hdr-enabled --hdr-sdr-content-nits 250 --hdr-itm-enable ...
+
+// Check GPU support
+if (hdr.supportsAutoHdr()) {
+    // RTX 20+ series
+}
+if (hdr.supportsAiAutoHdr()) {
+    // RTX 40/50 AI-enhanced
+}
 ```
 
 ## CLI Interface
