@@ -54,6 +54,7 @@ pub const dbus = @import("dbus/dbus.zig");
 
 // Low-level bindings
 pub const nvml = @import("bindings/nvml.zig");
+pub const nvapi = @import("bindings/nvapi.zig");
 
 // Direct access to standalone libraries (for advanced use)
 pub const deps = struct {

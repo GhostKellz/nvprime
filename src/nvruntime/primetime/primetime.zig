@@ -140,8 +140,8 @@ pub const Compositor = struct {
     config: Config,
     state: CompositorState = .uninitialized,
 
-    // Frame pacing
-    pacer: frame_pacing.FramePacer,
+    // Frame pacing (ghostVK-powered with VRR awareness)
+    pacer: ?frame_pacing.FramePacer = null,
 
     // Current output info
     current_output: OutputInfo = .{},
@@ -159,10 +159,22 @@ pub const Compositor = struct {
         self.* = Compositor{
             .allocator = allocator,
             .config = config,
-            .pacer = frame_pacing.FramePacer.init(if (config.fps_limit > 0) config.fps_limit else 60),
         };
 
-        self.pacer.setMode(config.pacing_mode);
+        // Initialize ghostVK-powered frame pacer with VRR awareness
+        const pacing_mode: frame_pacing.PacingMode = switch (config.pacing_mode) {
+            .none => .unlimited,
+            .vsync => .cpu_sleep,
+            .adaptive => .hybrid,
+            .vrr => .hybrid,
+            .limited => .cpu_sleep,
+        };
+
+        self.pacer = frame_pacing.FramePacer.init(allocator, .{
+            .target_fps = config.fps_limit,
+            .mode = pacing_mode,
+            .vrr_enabled = config.vrr,
+        }) catch null;
 
         // TODO: Initialize DRM device for mode queries when -Ddrm=true
         // For now, use stub output detection
@@ -175,6 +187,11 @@ pub const Compositor = struct {
     pub fn deinit(self: *Compositor) void {
         if (self.state == .running) {
             self.stop() catch {};
+        }
+
+        // Clean up frame pacer
+        if (self.pacer) |*p| {
+            p.deinit();
         }
 
         self.allocator.destroy(self);
@@ -255,21 +272,29 @@ pub const Compositor = struct {
 
     /// Get latency stats
     pub fn getLatencyStats(self: *const Compositor) LatencyStats {
-        return LatencyStats{
-            .total_latency_ms = self.pacer.getAverageLatencyMs(),
-            .cpu_frame_ms = self.pacer.getAverageFrameTimeMs(),
-        };
+        if (self.pacer) |*p| {
+            const stats = p.getStats();
+            return LatencyStats{
+                .total_latency_ms = stats.avg_frame_time_ms,
+                .cpu_frame_ms = stats.avg_frame_time_ms,
+            };
+        }
+        return LatencyStats{};
     }
 
     /// Get performance stats
     pub fn getPerfStats(self: *const Compositor) PerfStats {
-        return PerfStats{
-            .fps = self.pacer.getCurrentFps(),
-            .frame_time_ms = self.pacer.getAverageFrameTimeMs(),
-            .one_percent_low_fps = self.pacer.getOnePercentLowFps(),
-            .vrr_hz = self.pacer.getOptimalVrrHz(),
-            .frame_count = self.pacer.frame_number,
-        };
+        if (self.pacer) |*p| {
+            const stats = p.getStats();
+            return PerfStats{
+                .fps = stats.current_fps,
+                .frame_time_ms = stats.avg_frame_time_ms,
+                .one_percent_low_fps = stats.one_percent_low_fps,
+                .vrr_hz = if (stats.vrr_enabled) stats.vrr_range[1] else 0,
+                .frame_count = stats.frames_paced,
+            };
+        }
+        return PerfStats{};
     }
 
     /// Set VRR enabled
@@ -281,9 +306,8 @@ pub const Compositor = struct {
     /// Set frame limit
     pub fn setFrameLimit(self: *Compositor, fps: u32) void {
         self.config.fps_limit = fps;
-        self.pacer.setTargetFps(fps);
-        if (fps > 0) {
-            self.pacer.setMode(.limited);
+        if (self.pacer) |*p| {
+            p.setTargetFps(fps);
         }
     }
 

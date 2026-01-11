@@ -68,6 +68,47 @@ pub const memory_decompression = nvvk.memory_decompression;
 pub const mesh_shader = nvvk.mesh_shader;
 pub const ray_tracing = nvvk.ray_tracing;
 
+// Re-export Frame Generation modules (Phase 3)
+pub const optical_flow = nvvk.optical_flow;
+pub const motion_vectors = nvvk.motion_vectors;
+pub const frame_synthesis = nvvk.frame_synthesis;
+pub const frame_generation = nvvk.frame_generation;
+pub const present_injection = nvvk.present_injection;
+pub const vrr = nvvk.vrr;
+
+// Re-export Optical Flow types
+pub const OpticalFlowContext = nvvk.OpticalFlowContext;
+pub const OpticalFlowConfig = nvvk.OpticalFlowConfig;
+pub const OpticalFlowProperties = nvvk.OpticalFlowProperties;
+
+// Re-export Motion Vector types
+pub const MotionVectorContext = nvvk.MotionVectorContext;
+pub const MotionVectorConfig = nvvk.MotionVectorConfig;
+pub const MotionVectorBuffer = nvvk.MotionVectorBuffer;
+
+// Re-export Frame Synthesis types
+pub const FrameSynthesisContext = nvvk.FrameSynthesisContext;
+
+// Re-export Frame Generation types
+pub const FrameGenContext = nvvk.FrameGenContext;
+pub const FrameGenConfig = nvvk.FrameGenConfig;
+pub const FrameGenMode = nvvk.FrameGenMode;
+pub const FrameGenStats = nvvk.FrameGenStats;
+pub const GeneratedFrame = nvvk.GeneratedFrame;
+
+// Re-export Present Injection types
+pub const PresentInjectionContext = nvvk.PresentInjectionContext;
+pub const InjectionConfig = nvvk.InjectionConfig;
+pub const InjectionMode = nvvk.InjectionMode;
+pub const TimingMode = nvvk.TimingMode;
+pub const InjectionStats = nvvk.InjectionStats;
+
+// Re-export VRR types
+pub const VrrConfig = nvvk.VrrConfig;
+pub const VrrSource = nvvk.VrrSource;
+pub const VrrStatus = nvvk.VrrStatus;
+pub const LfcState = nvvk.LfcState;
+
 // Re-export extension names
 pub const ext_names = nvvk.ext_names;
 

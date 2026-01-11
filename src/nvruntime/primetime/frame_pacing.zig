@@ -1,25 +1,18 @@
 //! Frame Pacing Engine for PrimeTime
 //!
-//! Handles frame timing, VRR coordination, and latency optimization.
-//! Integrates with nvlatency and nvsync for full pipeline control.
+//! Integrates with ghostVK's VRR-aware frame pacer and nvlatency for
+//! full pipeline latency control. Provides frame timing, VRR coordination,
+//! and latency optimization.
 
 const std = @import("std");
+const ghostvk = @import("ghostvk");
 
-/// Frame pacing mode
-pub const PacingMode = enum {
-    /// No frame pacing - present as fast as possible
-    none,
-    /// VSync - wait for vertical blank
-    vsync,
-    /// Adaptive VSync - VSync when above target, tear when below
-    adaptive,
-    /// VRR - Variable Refresh Rate (G-Sync/FreeSync)
-    vrr,
-    /// Frame limiter - cap at specific FPS
-    limited,
-};
+// Re-export ghostVK's frame pacer as the primary implementation
+pub const FramePacer = ghostvk.frame_pacer.FramePacer;
+pub const FramePacerConfig = ghostvk.frame_pacer.FramePacerConfig;
+pub const PacingMode = ghostvk.frame_pacer.PacingMode;
 
-/// Frame statistics
+/// Frame statistics for detailed timing analysis
 pub const FrameStats = struct {
     /// Frame number
     frame_number: u64 = 0,
@@ -64,7 +57,7 @@ pub const FrameStats = struct {
     }
 };
 
-/// Rolling statistics buffer
+/// Rolling statistics buffer for frame time analysis
 pub fn RollingStats(comptime N: usize) type {
     return struct {
         const Self = @This();
@@ -127,129 +120,64 @@ pub fn RollingStats(comptime N: usize) type {
     };
 }
 
-/// Frame pacer state
-pub const FramePacer = struct {
-    mode: PacingMode = .vsync,
-    target_fps: u32 = 60,
-    target_frame_ns: u64 = 16_666_667, // 60 FPS
-    vrr_min_hz: u32 = 30,
-    vrr_max_hz: u32 = 144,
-
-    last_present_ns: u64 = 0,
-    frame_number: u64 = 0,
-
-    // Statistics (last 300 frames = ~5 seconds at 60fps)
-    frame_times: RollingStats(300) = .{},
-    latencies: RollingStats(300) = .{},
-
-    /// Initialize with target FPS
-    pub fn init(target_fps: u32) FramePacer {
-        return FramePacer{
-            .target_fps = target_fps,
-            .target_frame_ns = if (target_fps > 0) 1_000_000_000 / target_fps else 0,
-        };
-    }
-
-    /// Set pacing mode
-    pub fn setMode(self: *FramePacer, mode: PacingMode) void {
-        self.mode = mode;
-    }
-
-    /// Set target FPS (for limited mode)
-    pub fn setTargetFps(self: *FramePacer, fps: u32) void {
-        self.target_fps = fps;
-        self.target_frame_ns = if (fps > 0) 1_000_000_000 / fps else 0;
-    }
-
-    /// Set VRR range
-    pub fn setVrrRange(self: *FramePacer, min_hz: u32, max_hz: u32) void {
-        self.vrr_min_hz = min_hz;
-        self.vrr_max_hz = max_hz;
-    }
-
-    /// Record frame completion
-    pub fn recordFrame(self: *FramePacer, stats: *const FrameStats) void {
-        const frame_time_ms = @as(f32, @floatFromInt(stats.cpuTimeNs())) / 1_000_000.0;
-        const latency_ms = stats.totalLatencyMs();
-
-        self.frame_times.push(frame_time_ms);
-        self.latencies.push(latency_ms);
-
-        if (stats.present_ns > 0) {
-            self.last_present_ns = stats.present_ns;
-        }
-        self.frame_number = stats.frame_number;
-    }
-
-    /// Calculate how long to sleep before next frame (for frame limiting)
-    pub fn calculateSleepNs(self: *const FramePacer, current_ns: u64) u64 {
-        if (self.mode != .limited or self.target_frame_ns == 0) {
-            return 0;
-        }
-
-        if (self.last_present_ns == 0) return 0;
-
-        const elapsed = current_ns - self.last_present_ns;
-        if (elapsed >= self.target_frame_ns) return 0;
-
-        return self.target_frame_ns - elapsed;
-    }
-
-    /// Get current FPS
-    pub fn getCurrentFps(self: *const FramePacer) f32 {
-        const avg_frame_time = self.frame_times.average();
-        if (avg_frame_time <= 0) return 0;
-        return 1000.0 / avg_frame_time;
-    }
-
-    /// Get average frame time (ms)
-    pub fn getAverageFrameTimeMs(self: *const FramePacer) f32 {
-        return self.frame_times.average();
-    }
-
-    /// Get 1% low FPS
-    pub fn getOnePercentLowFps(self: *const FramePacer) f32 {
-        const worst_frame_time = self.frame_times.onePercentLow();
-        if (worst_frame_time <= 0) return 0;
-        return 1000.0 / worst_frame_time;
-    }
-
-    /// Get average latency (ms)
-    pub fn getAverageLatencyMs(self: *const FramePacer) f32 {
-        return self.latencies.average();
-    }
-
-    /// Determine optimal VRR refresh rate for current frame time
-    pub fn getOptimalVrrHz(self: *const FramePacer) u32 {
-        const avg_frame_time_ms = self.frame_times.average();
-        if (avg_frame_time_ms <= 0) return self.vrr_max_hz;
-
-        const target_hz = @as(u32, @intFromFloat(1000.0 / avg_frame_time_ms));
-
-        // Clamp to VRR range
-        if (target_hz < self.vrr_min_hz) return self.vrr_min_hz;
-        if (target_hz > self.vrr_max_hz) return self.vrr_max_hz;
-        return target_hz;
-    }
+/// Pacer statistics for monitoring
+pub const PacerStats = struct {
+    /// Current FPS
+    fps: f32 = 0,
+    /// Average frame time (ms)
+    avg_frame_time_ms: f32 = 0,
+    /// 1% low FPS
+    one_percent_low_fps: f32 = 0,
+    /// VRR enabled
+    vrr_enabled: bool = false,
+    /// VRR range (min, max Hz)
+    vrr_range: [2]u32 = .{ 0, 0 },
+    /// Total frames paced
+    frames_paced: u64 = 0,
+    /// Total sleep time (ns)
+    total_sleep_ns: u64 = 0,
 };
 
 /// High precision sleep
 pub fn precisionSleepNs(ns: u64) void {
     if (ns == 0) return;
 
-    const ts = std.posix.timespec{
-        .sec = @intCast(ns / 1_000_000_000),
-        .nsec = @intCast(ns % 1_000_000_000),
-    };
-    _ = std.posix.nanosleep(ts, null);
+    const seconds: i64 = @intCast(ns / 1_000_000_000);
+    const nanos: i64 = @intCast(ns % 1_000_000_000);
+    std.posix.nanosleep(seconds, nanos);
 }
 
-test "frame pacer" {
-    var pacer = FramePacer.init(60);
-    try std.testing.expectEqual(@as(u64, 16_666_667), pacer.target_frame_ns);
+/// Create a frame pacer with default gaming settings
+pub fn createGamingPacer(allocator: std.mem.Allocator, target_fps: u32) !FramePacer {
+    return FramePacer.init(allocator, .{
+        .target_fps = target_fps,
+        .mode = .hybrid,
+        .busy_wait_threshold_ns = 500_000, // 0.5ms for low latency
+    });
+}
 
-    pacer.setTargetFps(144);
-    try std.testing.expectEqual(@as(u32, 144), pacer.target_fps);
+/// Create a frame pacer optimized for VRR displays
+pub fn createVrrPacer(allocator: std.mem.Allocator) !FramePacer {
+    return FramePacer.init(allocator, .{
+        .target_fps = 0, // Unlimited, let VRR handle it
+        .mode = .hybrid,
+        .vrr_enabled = true,
+    });
+}
+
+test "frame stats" {
+    var stats = FrameStats{
+        .frame_number = 1,
+        .cpu_start_ns = 1000,
+        .cpu_end_ns = 2000,
+        .gpu_submit_ns = 2000,
+        .gpu_complete_ns = 5000,
+        .present_ns = 6000,
+    };
+
+    try std.testing.expectEqual(@as(u64, 1000), stats.cpuTimeNs());
+    try std.testing.expectEqual(@as(u64, 3000), stats.gpuTimeNs());
+    try std.testing.expectEqual(@as(u64, 5000), stats.totalLatencyNs());
 }
 
 test "rolling stats" {

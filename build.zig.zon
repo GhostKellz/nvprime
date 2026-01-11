@@ -34,7 +34,7 @@
     .dependencies = .{
         .nvvk = .{
             .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.0-mPNRRkZ2AwAkfSQHkPmgsoMDs3XDudWPWfyd-YMdzNx8",
+            .hash = "nvvk-0.4.0-mPNRRndyBAB3SSDYQpw3-hDmQt6xxc9l6lZ-QVuzTvL4",
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
@@ -58,7 +58,7 @@
         },
         .ghostVK = .{
             .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
-            .hash = "ghostVK-0.0.0-bt87R6cwAwD-3GKLFZMmh7TIOw2LOMRgjLPSy0ZgiaCZ",
+            .hash = "ghostVK-0.0.0-bt87R846AwD4UCj5RBh7cgTHf7jjP2CQomwkSdPiYv3I",
         },
     },
     .paths = .{
