@@ -63,17 +63,17 @@ pub const ThermalStatus = enum {
 /// Query temperature via nvidia-smi for sensors not in NVML
 fn queryNvidiaSmiTemp(device_index: u32, query: []const u8) u32 {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
     var id_buf: [16]u8 = undefined;
     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return 0;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-smi", "-i", id_str, "--query-gpu", query, "--format=csv,noheader,nounits" },
     }) catch return 0;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) return 0;
+    if (result.term != .exited or result.term.exited != 0) return 0;
 
     const output = std.mem.trim(u8, result.stdout, " \t\n\r");
     return std.fmt.parseInt(u32, output, 10) catch 0;

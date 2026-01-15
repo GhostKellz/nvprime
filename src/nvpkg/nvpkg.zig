@@ -51,7 +51,7 @@ pub const Paths = struct {
     }
 
     pub fn user() Paths {
-        const home = std.posix.getenv("HOME") orelse "/home/user";
+        const home = std.c.getenv("HOME") orelse "/home/user";
         _ = home;
         return Paths{
             .config_dir = "~/.config/nvprime",
@@ -64,9 +64,9 @@ pub const Paths = struct {
 
     /// Get XDG-compliant paths
     pub fn xdg() Paths {
-        const config = std.posix.getenv("XDG_CONFIG_HOME") orelse "~/.config";
-        const data = std.posix.getenv("XDG_DATA_HOME") orelse "~/.local/share";
-        const cache = std.posix.getenv("XDG_CACHE_HOME") orelse "~/.cache";
+        const config = std.c.getenv("XDG_CONFIG_HOME") orelse "~/.config";
+        const data = std.c.getenv("XDG_DATA_HOME") orelse "~/.local/share";
+        const cache = std.c.getenv("XDG_CACHE_HOME") orelse "~/.cache";
         _ = config;
         _ = data;
         _ = cache;
@@ -127,14 +127,14 @@ pub fn getStatus() InstallStatus {
     // Check for config directory
     const paths = Paths.system();
 
-    if (std.fs.accessAbsolute(paths.config_dir, .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), paths.config_dir, .{})) |_| {
         // Config exists, check for main config file
         var config_path_buf: [512]u8 = undefined;
         const config_path = std.fmt.bufPrint(&config_path_buf, "{s}/nvprime.toml", .{paths.config_dir}) catch {
             return .partial;
         };
 
-        if (std.fs.accessAbsolute(config_path, .{})) |_| {
+        if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), config_path, .{})) |_| {
             return .installed;
         } else |_| {
             return .partial;
@@ -165,14 +165,13 @@ pub fn checkDriver() DriverInfo {
     var info = DriverInfo{};
 
     // Query driver version via nvidia-smi
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
+    const result = std.process.run(std.heap.page_allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader" },
     }) catch return info;
     defer std.heap.page_allocator.free(result.stdout);
     defer std.heap.page_allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) return info;
+    if (result.term != .exited or result.term.exited != 0) return info;
 
     const ver_str = std.mem.trim(u8, result.stdout, " \t\n\r");
     const len = @min(ver_str.len, info.version.len);
@@ -195,24 +194,23 @@ pub fn checkDriver() DriverInfo {
     info.is_compatible = info.major >= 535;
 
     // Check for open driver
-    if (std.fs.accessAbsolute("/sys/module/nvidia/parameters/modeset", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), "/sys/module/nvidia/parameters/modeset", .{})) |_| {
         // Proprietary driver
         info.is_open = false;
     } else |_| {}
 
-    if (std.fs.accessAbsolute("/sys/module/nvidia_open", .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), "/sys/module/nvidia_open", .{})) |_| {
         info.is_open = true;
     } else |_| {}
 
     // Check GSP status
-    const gsp_result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
+    const gsp_result = std.process.run(std.heap.page_allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-smi", "--query-gpu=gsp.mode.current", "--format=csv,noheader" },
     }) catch return info;
     defer std.heap.page_allocator.free(gsp_result.stdout);
     defer std.heap.page_allocator.free(gsp_result.stderr);
 
-    if (gsp_result.term == .Exited and gsp_result.term.Exited == 0) {
+    if (gsp_result.term == .exited and gsp_result.term.exited == 0) {
         const gsp_mode = std.mem.trim(u8, gsp_result.stdout, " \t\n\r");
         info.gsp_enabled = std.mem.eql(u8, gsp_mode, "Enabled") or
             std.mem.eql(u8, gsp_mode, "1");
@@ -306,9 +304,9 @@ pub const ShaderCacheInfo = struct {
 
 /// Get shader cache info
 pub fn getShaderCacheInfo() ShaderCacheInfo {
-    const cache_path = std.posix.getenv("__GL_SHADER_DISK_CACHE_PATH") orelse
+    const cache_path = std.c.getenv("__GL_SHADER_DISK_CACHE_PATH") orelse
         blk: {
-        const home = std.posix.getenv("HOME") orelse "/home/user";
+        const home = std.c.getenv("HOME") orelse "/home/user";
         _ = home;
         break :blk "~/.cache/nvidia/GLCache";
     };
@@ -317,7 +315,7 @@ pub fn getShaderCacheInfo() ShaderCacheInfo {
         .path = cache_path,
         .size_bytes = 0,
         .file_count = 0,
-        .enabled = std.posix.getenv("__GL_SHADER_DISK_CACHE") != null,
+        .enabled = std.c.getenv("__GL_SHADER_DISK_CACHE") != null,
     };
 
     // Would walk directory to calculate size
@@ -328,28 +326,29 @@ pub fn getShaderCacheInfo() ShaderCacheInfo {
 
 /// Clear shader cache
 pub fn clearShaderCache() !void {
-    const home = std.posix.getenv("HOME") orelse return error.NoHome;
+    const home = std.c.getenv("HOME") orelse return error.NoHome;
     var path_buf: [512]u8 = undefined;
 
     // Clear NVIDIA GLCache
     const gl_cache = std.fmt.bufPrint(&path_buf, "{s}/.cache/nvidia/GLCache", .{home}) catch return error.PathError;
 
     // Use rm -rf via shell (safer than recursive delete in Zig)
-    var child = std.process.Child.init(
-        &.{ "rm", "-rf", gl_cache },
-        std.heap.page_allocator,
-    );
-    child.spawn() catch return error.SpawnError;
-    _ = child.wait() catch return error.WaitError;
+    const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const result1 = std.process.run(allocator, io, .{
+        .argv = &.{ "rm", "-rf", gl_cache },
+    }) catch return error.SpawnError;
+    allocator.free(result1.stdout);
+    allocator.free(result1.stderr);
 
     // Clear nvprime shader cache
     const nvprime_cache = std.fmt.bufPrint(&path_buf, "{s}/.cache/nvprime/shaders", .{home}) catch return error.PathError;
-    var child2 = std.process.Child.init(
-        &.{ "rm", "-rf", nvprime_cache },
-        std.heap.page_allocator,
-    );
-    child2.spawn() catch return error.SpawnError;
-    _ = child2.wait() catch return error.WaitError;
+    const result2 = std.process.run(allocator, io, .{
+        .argv = &.{ "rm", "-rf", nvprime_cache },
+    }) catch return error.SpawnError;
+    allocator.free(result2.stdout);
+    allocator.free(result2.stderr);
 }
 
 /// Installation actions

@@ -129,13 +129,13 @@ fn parseEdidVrrRange(edid: []const u8) struct { min: u32, max: u32 } {
 /// Query nvidia-settings for VRR state
 fn queryNvidiaSettingsVrr() struct { gsync_enabled: bool, gsync_compat: bool } {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var gsync_enabled = false;
     var gsync_compat = false;
 
     // Query AllowGSYNC
-    const result1 = std.process.Child.run(.{
-        .allocator = allocator,
+    const result1 = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-t", "-q", "AllowGSYNC" },
     }) catch return .{ .gsync_enabled = false, .gsync_compat = false };
     defer allocator.free(result1.stdout);
@@ -146,8 +146,7 @@ fn queryNvidiaSettingsVrr() struct { gsync_enabled: bool, gsync_compat: bool } {
     }
 
     // Query AllowGSYNCCompatible
-    const result2 = std.process.Child.run(.{
-        .allocator = allocator,
+    const result2 = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-t", "-q", "AllowGSYNCCompatible" },
     }) catch return .{ .gsync_enabled = gsync_enabled, .gsync_compat = false };
     defer allocator.free(result2.stdout);
@@ -234,15 +233,15 @@ pub fn getState(display_name: []const u8) !VrrState {
 /// Run nvidia-settings assignment
 fn runNvidiaSettingsAssign(assignment: []const u8) !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-a", assignment },
     }) catch return error.NvidiaSettingsError;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.NvidiaSettingsError;
     }
 }

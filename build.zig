@@ -87,8 +87,8 @@ pub fn build(b: *std.Build) void {
     });
 
     if (use_nvml) {
-        exe.linkSystemLibrary("nvidia-ml");
-        exe.linkLibC();
+        exe.root_module.linkSystemLibrary("nvidia-ml", .{});
+        exe.root_module.linkSystemLibrary("c", .{});
         exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/cuda/targets/x86_64-linux/include" });
     }
 
@@ -110,8 +110,8 @@ pub fn build(b: *std.Build) void {
     });
 
     if (use_nvml) {
-        lib.linkSystemLibrary("nvidia-ml");
-        lib.linkLibC();
+        lib.root_module.linkSystemLibrary("nvidia-ml", .{});
+        lib.root_module.linkSystemLibrary("c", .{});
         lib.root_module.addIncludePath(.{ .cwd_relative = "/opt/cuda/targets/x86_64-linux/include" });
     }
 
@@ -136,8 +136,8 @@ pub fn build(b: *std.Build) void {
     });
 
     if (use_nvml) {
-        mod_tests.linkSystemLibrary("nvidia-ml");
-        mod_tests.linkLibC();
+        mod_tests.root_module.linkSystemLibrary("nvidia-ml", .{});
+        mod_tests.root_module.linkSystemLibrary("c", .{});
     }
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -155,8 +155,8 @@ pub fn build(b: *std.Build) void {
     });
 
     if (use_nvml) {
-        exe_tests.linkSystemLibrary("nvidia-ml");
-        exe_tests.linkLibC();
+        exe_tests.root_module.linkSystemLibrary("nvidia-ml", .{});
+        exe_tests.root_module.linkSystemLibrary("c", .{});
         exe_tests.root_module.addIncludePath(.{ .cwd_relative = "/opt/cuda/targets/x86_64-linux/include" });
     }
 

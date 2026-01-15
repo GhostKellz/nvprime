@@ -55,14 +55,14 @@ pub const GsyncState = struct {
 /// Run nvidia-settings query and return output
 fn runNvidiaSettingsQuery(query: []const u8) !?[]const u8 {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-q", query },
     }) catch return null;
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
         return null;
     }
@@ -73,15 +73,15 @@ fn runNvidiaSettingsQuery(query: []const u8) !?[]const u8 {
 /// Run nvidia-settings assignment
 fn runNvidiaSettingsAssign(assignment: []const u8) !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-a", assignment },
     }) catch return error.NvidiaSettingsError;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.NvidiaSettingsError;
     }
 }

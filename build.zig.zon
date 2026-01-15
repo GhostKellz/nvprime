@@ -25,7 +25,7 @@
     .fingerprint = 0x9f7fe50e2c3a487, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0-dev.1225+bf9082518",
+    .minimum_zig_version = "0.16.0-dev.2193+fc517bd01",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -34,19 +34,19 @@
     .dependencies = .{
         .nvvk = .{
             .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.0-mPNRRndyBAB3SSDYQpw3-hDmQt6xxc9l6lZ-QVuzTvL4",
+            .hash = "nvvk-0.4.1-mPNRRuJyBAC01dzuXri-Vzklerv1ImaV88kY-welq9D5",
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.0-UbzfUT_OAwAnvF5Oy8HjNs4RlLuCjlRt_Gw4Wwy7awAl",
+            .hash = "nvhud-0.4.1-UbzfUWf4AwA58IMXdbITa_iswda20NWy0ECwlB1dRCwf",
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.0-ELEK3s36AACj7q9Uc7H1mHlGNJvHFp3PL86tslcPkWS8",
+            .hash = "nvlatency-0.2.1-ELEK3oIEAQAZjV6UX9H4d4ZDzV7eHcE1JsqFv9hxWE7j",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
-            .hash = "nvsync-0.2.0-yy7g7SSBAQD2Owvad-FlTVwxqOcFl550lZpQO9cyHk3Z",
+            .hash = "nvsync-0.2.1-yy7g7VvXAQD-nYf5p6Y93phGoHbOCQq7DnuPh6XS9rSU",
         },
         .nvshader = .{
             .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
@@ -58,7 +58,7 @@
         },
         .ghostVK = .{
             .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
-            .hash = "ghostVK-0.0.0-bt87R846AwD4UCj5RBh7cgTHf7jjP2CQomwkSdPiYv3I",
+            .hash = "ghostVK-0.0.0-bt87R-k7AwBNQDuR8Qh2S3lkx9lCp1GdJyaTudgZdQ25",
         },
     },
     .paths = .{

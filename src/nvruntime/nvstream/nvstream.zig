@@ -577,6 +577,7 @@ const NVFBC_LIB_PATHS = [_][]const u8{
 
 /// Check if NVFBC capture is available
 pub fn isNvfbcAvailable() bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
     // Check standard library paths for NVFBC
     for (NVFBC_LIB_PATHS) |path| {
         if (std.fs.cwd().access(path, .{})) |_| {
@@ -585,7 +586,8 @@ pub fn isNvfbcAvailable() bool {
     }
 
     // Check LD_LIBRARY_PATH locations
-    if (std.posix.getenv("LD_LIBRARY_PATH")) |ld_path| {
+    if (std.c.getenv("LD_LIBRARY_PATH")) |ld_path| {
+        _ = io; // Will be used when full Io API is needed
         var path_buf: [512]u8 = undefined;
         var iter = std.mem.splitScalar(u8, ld_path, ':');
         while (iter.next()) |dir| {

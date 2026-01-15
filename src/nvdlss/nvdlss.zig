@@ -1298,7 +1298,7 @@ pub const ReflexContext = struct {
 /// Detect GPU generation from PCI device info or environment
 pub fn detectGpuGeneration() GpuGeneration {
     // Check for override environment variable
-    if (std.posix.getenv("DLSS_GPU_GEN")) |gen_str| {
+    if (std.c.getenv("DLSS_GPU_GEN")) |gen_str| {
         const gen = std.mem.sliceTo(gen_str, 0);
         if (std.mem.eql(u8, gen, "blackwell") or std.mem.eql(u8, gen, "50")) {
             return .blackwell;
@@ -1312,16 +1312,17 @@ pub fn detectGpuGeneration() GpuGeneration {
     }
 
     // Try to read GPU device ID from sysfs
+    const io = std.Io.Threaded.global_single_threaded.io();
     const gpu_paths = [_][]const u8{
         "/sys/class/drm/card0/device/device",
         "/sys/class/drm/card1/device/device",
     };
 
     for (gpu_paths) |path| {
-        if (std.fs.openFileAbsolute(path, .{})) |file| {
-            defer file.close();
+        if (std.Io.Dir.openFileAbsolute(io, path, .{})) |file| {
+            defer file.close(io);
             var buf: [32]u8 = undefined;
-            if (file.read(&buf)) |len| {
+            if (file.read(io, &buf)) |len| {
                 const device_id_str = std.mem.trim(u8, buf[0..len], " \n\r\t");
                 // Parse hex device ID (format: 0x2684 for RTX 50 series)
                 if (device_id_str.len > 2 and device_id_str[0] == '0' and device_id_str[1] == 'x') {

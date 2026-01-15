@@ -80,21 +80,19 @@ pub const LockMode = enum {
 /// Note: This uses nvidia-smi under the hood
 pub fn lock(device_index: u32, mode: LockMode) !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     // First enable persistence mode
     {
         var id_buf: [16]u8 = undefined;
         const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
 
-        var child = std.process.Child.init(
-            &.{ "nvidia-smi", "-i", id_str, "-pm", "1" },
-            allocator,
-        );
-        child.stderr_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        try child.spawn();
-        const result = try child.wait();
-        if (result.Exited != 0) return error.NvidiaSmiError;
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "nvidia-smi", "-i", id_str, "-pm", "1" },
+        }) catch return error.NvidiaSmiError;
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        if (result.term != .exited or result.term.exited != 0) return error.NvidiaSmiError;
     }
 
     // Get max clocks for the GPU
@@ -116,34 +114,29 @@ pub fn lock(device_index: u32, mode: LockMode) !void {
     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
     const clock_str = std.fmt.bufPrint(&clock_buf, "{d},{d}", .{ target_mem, target_gpu }) catch return error.FormatError;
 
-    var child = std.process.Child.init(
-        &.{ "nvidia-smi", "-i", id_str, "-ac", clock_str },
-        allocator,
-    );
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    try child.spawn();
-    const result = try child.wait();
-    if (result.Exited != 0) return error.NvidiaSmiError;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "nvidia-smi", "-i", id_str, "-ac", clock_str },
+    }) catch return error.NvidiaSmiError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return error.NvidiaSmiError;
 }
 
 /// Unlock P-state (return to dynamic)
 pub fn unlock(device_index: u32) !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var id_buf: [16]u8 = undefined;
     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return error.FormatError;
 
     // Reset application clocks
-    var child = std.process.Child.init(
-        &.{ "nvidia-smi", "-i", id_str, "-rac" },
-        allocator,
-    );
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    try child.spawn();
-    const result = try child.wait();
-    if (result.Exited != 0) return error.NvidiaSmiError;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "nvidia-smi", "-i", id_str, "-rac" },
+    }) catch return error.NvidiaSmiError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return error.NvidiaSmiError;
 }
 
 /// P-state history tracking

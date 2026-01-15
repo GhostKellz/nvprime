@@ -230,14 +230,24 @@ pub const Compositor = struct {
     }
 
     /// Run a game within the compositor
-    pub fn runGame(self: *Compositor, argv: []const []const u8, env: ?*const std.process.EnvMap) !void {
+    pub fn runGame(self: *Compositor, argv: []const []const u8, env: ?*const std.process.Environ.Map) !void {
         if (self.state != .running) {
             try self.start();
         }
 
+        const io = std.Io.Threaded.global_single_threaded.io();
+
         // Set up environment for the game
-        var child_env = if (env) |e| e.* else try std.process.getEnvMap(self.allocator);
-        defer if (env == null) child_env.deinit();
+        var child_env = std.process.Environ.Map.init(self.allocator);
+        defer child_env.deinit();
+
+        // Copy existing environment if provided
+        if (env) |e| {
+            var iter = e.array_hash_map.iterator();
+            while (iter.next()) |entry| {
+                try child_env.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
 
         // Set WAYLAND_DISPLAY to our socket
         if (self.socket_name_len > 0) {
@@ -253,10 +263,11 @@ pub const Compositor = struct {
         }
 
         // Spawn the game process
-        var child = std.process.Child.init(argv, self.allocator);
-        child.env_map = &child_env;
+        const child = std.process.spawn(io, .{
+            .argv = argv,
+            .environ_map = &child_env,
+        }) catch return error.SpawnError;
 
-        try child.spawn();
         self.game_pid = child.id;
     }
 

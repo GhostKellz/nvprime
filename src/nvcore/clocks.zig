@@ -79,7 +79,10 @@ pub fn getSummary(device_index: u32) !ClockSummary {
 
 /// Run nvidia-smi command and return success/failure
 fn runNvidiaSmi(args: []const []const u8) !void {
-    var argv = std.ArrayList([]const u8).init(std.heap.page_allocator);
+    const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var argv = std.ArrayList([]const u8).init(allocator);
     defer argv.deinit();
 
     try argv.append("nvidia-smi");
@@ -87,14 +90,13 @@ fn runNvidiaSmi(args: []const []const u8) !void {
         try argv.append(arg);
     }
 
-    var child = std.process.Child.init(argv.items, std.heap.page_allocator);
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
+    const result = std.process.run(allocator, io, .{
+        .argv = argv.items,
+    }) catch return error.NvidiaSmiError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    try child.spawn();
-    const result = try child.wait();
-
-    if (result.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.NvidiaSmiError;
     }
 }

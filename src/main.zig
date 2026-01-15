@@ -5,112 +5,108 @@
 const std = @import("std");
 const nvprime = @import("nvprime");
 
-const Stdout = std.fs.File.Writer;
-const Stderr = std.fs.File.Writer;
+const Io = std.Io;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buf);
-    var stderr = std.fs.File.stderr().writer(&stderr_buf);
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
+    var stderr_writer = Io.File.stderr().writer(io, &stderr_buf);
+    const stdout = &stdout_writer.interface;
+    const stderr = &stderr_writer.interface;
 
     // Parse command line args
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    const args = try init.minimal.args.toSlice(allocator);
 
-    // Skip program name
-    _ = args.next();
-
-    const command = args.next() orelse {
-        try printUsage(&stdout.interface);
-        try stdout.interface.flush();
+    const command = if (args.len > 1) args[1] else {
+        try printUsage(stdout);
+        try stdout.flush();
         return;
     };
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
-        try printVersion(&stdout.interface);
-        try stdout.interface.flush();
+        try printVersion(stdout);
+        try stdout.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try printUsage(&stdout.interface);
-        try stdout.interface.flush();
+        try printUsage(stdout);
+        try stdout.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "status")) {
-        try printStatus(&stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try printStatus(stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "caps") or std.mem.eql(u8, command, "detect")) {
-        try printCapabilities(allocator, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try printCapabilities(allocator, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "core")) {
-        const subcommand = args.next() orelse "status";
+        const subcommand = if (args.len > 2) args[2] else "status";
         if (std.mem.eql(u8, subcommand, "status")) {
-            try printCoreStatus(&stdout.interface, &stderr.interface);
+            try printCoreStatus(stdout, stderr);
         } else {
-            try stderr.interface.print("Unknown core subcommand: {s}\n", .{subcommand});
+            try stderr.print("Unknown core subcommand: {s}\n", .{subcommand});
         }
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "power")) {
-        const subcommand = args.next() orelse "status";
+        const subcommand = if (args.len > 2) args[2] else "status";
         if (std.mem.eql(u8, subcommand, "status")) {
-            try printPowerStatus(&stdout.interface, &stderr.interface);
+            try printPowerStatus(stdout, stderr);
         } else {
-            try stderr.interface.print("Unknown power subcommand: {s}\n", .{subcommand});
+            try stderr.print("Unknown power subcommand: {s}\n", .{subcommand});
         }
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "display")) {
-        const subcommand = args.next() orelse "status";
+        const subcommand = if (args.len > 2) args[2] else "status";
         if (std.mem.eql(u8, subcommand, "status")) {
-            try printDisplayStatus(&stdout.interface, &stderr.interface);
+            try printDisplayStatus(stdout, stderr);
         } else {
-            try stderr.interface.print("Unknown display subcommand: {s}\n", .{subcommand});
+            try stderr.print("Unknown display subcommand: {s}\n", .{subcommand});
         }
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "hud")) {
-        const subcommand = args.next() orelse "status";
+        const subcommand = if (args.len > 2) args[2] else "status";
         if (std.mem.eql(u8, subcommand, "status")) {
-            try printHudStatus(&stdout.interface, &stderr.interface);
+            try printHudStatus(stdout, stderr);
         } else if (std.mem.eql(u8, subcommand, "metrics")) {
-            try printHudMetrics(&stdout.interface, &stderr.interface);
+            try printHudMetrics(stdout, stderr);
         } else {
-            try stderr.interface.print("Unknown hud subcommand: {s}\n", .{subcommand});
-            try stderr.interface.print("Available: status, metrics\n", .{});
+            try stderr.print("Unknown hud subcommand: {s}\n", .{subcommand});
+            try stderr.print("Available: status, metrics\n", .{});
         }
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
-    try stderr.interface.print("Unknown command: {s}\n", .{command});
-    try stderr.interface.print("Run 'nvprime help' for usage information.\n", .{});
-    try stderr.interface.flush();
+    try stderr.print("Unknown command: {s}\n", .{command});
+    try stderr.print("Run 'nvprime help' for usage information.\n", .{});
+    try stderr.flush();
 }
 
 fn printVersion(writer: *std.Io.Writer) !void {

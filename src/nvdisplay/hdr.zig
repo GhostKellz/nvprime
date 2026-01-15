@@ -95,21 +95,23 @@ const DRM_SYS_DIR = "/sys/class/drm";
 
 /// Read sysfs file value
 fn readSysfs(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
-    const file = fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
 
     var buf: [256]u8 = undefined;
-    const len = file.read(&buf) catch return null;
+    const len = file.readPositional(io, &.{&buf}, 0) catch return null;
     return allocator.dupe(u8, buf[0..len]) catch null;
 }
 
 /// Read sysfs binary file (for EDID)
 fn readSysfsBinary(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
-    const file = fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer file.close(io);
 
     var buf: [512]u8 = undefined;
-    const len = file.read(&buf) catch return null;
+    const len = file.readPositional(io, &.{&buf}, 0) catch return null;
     return allocator.dupe(u8, buf[0..len]) catch null;
 }
 
@@ -187,8 +189,7 @@ fn queryNvidiaSettingsHdr(display_name: []const u8) NvidiaSettingsHdrResult {
     // Query current color depth
     const query = std.fmt.bufPrint(&query_buf, "[{s}]/CurrentMetaMode", .{display_name}) catch return NvidiaSettingsHdrResult{ .enabled = false, .bit_depth = 8 };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-settings", "-t", "-q", query },
     }) catch return NvidiaSettingsHdrResult{ .enabled = false, .bit_depth = 8 };
     defer allocator.free(result.stdout);
@@ -212,14 +213,15 @@ fn queryNvidiaSettingsHdr(display_name: []const u8) NvidiaSettingsHdrResult {
 /// Get HDR state for a display
 pub fn getState(display_name: []const u8) !HdrState {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     // Find connector in DRM sysfs
-    var dir = fs.cwd().openDir(DRM_SYS_DIR, .{ .iterate = true }) catch return error.NotSupported;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(io, DRM_SYS_DIR, .{ .iterate = true }) catch return error.NotSupported;
+    defer dir.close(io);
 
     var found_card: ?[]const u8 = null;
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         // Look for card*-CONNECTOR patterns matching our display
         if (!mem.startsWith(u8, entry.name, "card")) continue;
         const dash_idx = mem.indexOf(u8, entry.name, "-") orelse continue;
@@ -273,14 +275,13 @@ pub fn getState(display_name: []const u8) !HdrState {
 fn runNvidiaSettingsAssign(assignment: []const u8) !void {
     const allocator = std.heap.page_allocator;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-settings", "-a", assignment },
     }) catch return error.NvidiaSettingsError;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.NvidiaSettingsError;
     }
 }
@@ -465,8 +466,7 @@ pub fn configureVideoHdr(config: VideoHdr) !void {
     const allocator = std.heap.page_allocator;
 
     // Check driver version first
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader" },
     }) catch return error.NvidiaSmiError;
     defer allocator.free(result.stdout);
@@ -624,8 +624,7 @@ pub fn supportsAutoHdr() bool {
     const allocator = std.heap.page_allocator;
 
     // Query GPU generation via nvidia-smi
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" },
     }) catch return false;
     defer allocator.free(result.stdout);
@@ -641,8 +640,7 @@ pub fn supportsAutoHdr() bool {
 pub fn supportsAiAutoHdr() bool {
     const allocator = std.heap.page_allocator;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" },
     }) catch return false;
     defer allocator.free(result.stdout);

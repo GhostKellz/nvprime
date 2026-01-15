@@ -33,15 +33,15 @@ pub const DisplayServer = enum {
 /// Detect current display server
 pub fn detectDisplayServer() DisplayServer {
     // Check for Wayland first (preferred)
-    if (posix.getenv("WAYLAND_DISPLAY") != null) {
+    if (std.c.getenv("WAYLAND_DISPLAY") != null) {
         // Wayland session - detect compositor
-        if (posix.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) {
+        if (std.c.getenv("HYPRLAND_INSTANCE_SIGNATURE") != null) {
             return .wayland_hyprland;
         }
-        if (posix.getenv("SWAYSOCK") != null) {
+        if (std.c.getenv("SWAYSOCK") != null) {
             return .wayland_sway;
         }
-        if (posix.getenv("XDG_CURRENT_DESKTOP")) |desktop| {
+        if (std.c.getenv("XDG_CURRENT_DESKTOP")) |desktop| {
             if (mem.indexOf(u8, desktop, "KDE") != null) {
                 return .wayland_kwin;
             }
@@ -53,7 +53,7 @@ pub fn detectDisplayServer() DisplayServer {
     }
 
     // X11 fallback
-    if (posix.getenv("DISPLAY") != null) {
+    if (std.c.getenv("DISPLAY") != null) {
         return .x11;
     }
 
@@ -163,13 +163,12 @@ fn runXrandr(allocator: mem.Allocator, args: []const []const u8) ![]const u8 {
         try argv.append(allocator, arg);
     }
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = argv.items,
     }) catch return error.XrandrError;
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
         return error.XrandrError;
     }
@@ -284,13 +283,12 @@ fn parseXrandrOutput(allocator: mem.Allocator, output: []const u8) !Layout {
 
 /// Run generic command and return output
 fn runCommand(allocator: mem.Allocator, argv: []const []const u8) ![]const u8 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = argv,
     }) catch return error.CommandError;
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         allocator.free(result.stdout);
         return error.CommandError;
     }
@@ -462,14 +460,13 @@ fn runXrandrCmd(args: []const []const u8) !void {
         try argv.append(allocator, arg);
     }
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = argv.items,
     }) catch return error.XrandrError;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.XrandrError;
     }
 }
@@ -627,14 +624,13 @@ pub const SurroundConfig = struct {
 fn runNvidiaSettingsAssign(assignment: []const u8) !void {
     const allocator = std.heap.page_allocator;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "nvidia-settings", "-a", assignment },
     }) catch return error.NvidiaSettingsError;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) {
+    if (result.term != .exited or result.term.exited != 0) {
         return error.NvidiaSettingsError;
     }
 }

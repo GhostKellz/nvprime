@@ -859,7 +859,7 @@ pub fn isLowLatencyAvailable() bool {
     };
 
     for (driver_paths) |path| {
-        if (std.fs.accessAbsolute(path, .{})) {
+        if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), path, .{})) |_| {
             return true; // NVIDIA Vulkan driver present
         } else |_| {}
     }

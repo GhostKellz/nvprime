@@ -34,17 +34,17 @@ pub const FanMode = enum {
 /// Query fan info via nvidia-smi
 fn queryNvidiaSmi(device_index: u32, query: []const u8) u32 {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
     var id_buf: [16]u8 = undefined;
     const id_str = std.fmt.bufPrint(&id_buf, "{d}", .{device_index}) catch return 0;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-smi", "-i", id_str, "--query-gpu", query, "--format=csv,noheader,nounits" },
     }) catch return 0;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term != .Exited or result.term.Exited != 0) return 0;
+    if (result.term != .exited or result.term.exited != 0) return 0;
 
     const output = std.mem.trim(u8, result.stdout, " \t\n\r");
     return std.fmt.parseInt(u32, output, 10) catch 0;
@@ -53,9 +53,9 @@ fn queryNvidiaSmi(device_index: u32, query: []const u8) u32 {
 /// Count number of fans via nvidia-settings
 fn getFanCount(device_index: u32) u32 {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ "nvidia-settings", "-t", "-q", "fans" },
     }) catch return 1;
     defer allocator.free(result.stdout);
@@ -109,17 +109,15 @@ pub fn getSpeed(device_index: u32) !u32 {
 /// Run nvidia-settings assignment
 fn assignNvidiaSettings(assignment: []const u8) !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var child = std.process.Child.init(
-        &.{ "nvidia-settings", "-a", assignment },
-        allocator,
-    );
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "nvidia-settings", "-a", assignment },
+    }) catch return error.NvidiaSettingsError;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    child.spawn() catch return error.NvidiaSettingsError;
-    const result = child.wait() catch return error.NvidiaSettingsError;
-    if (result.Exited != 0) return error.NvidiaSettingsError;
+    if (result.term != .exited or result.term.exited != 0) return error.NvidiaSettingsError;
 }
 
 /// Set manual fan speed (requires elevated permissions + Coolbits)

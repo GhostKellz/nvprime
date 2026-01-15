@@ -231,14 +231,13 @@ pub fn detectVersion() ?DxvkVersion {
     }
 
     // Try to get version from pacman/package manager
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Io.Threaded.global_single_threaded.io(), .{
         .argv = &.{ "pacman", "-Q", "dxvk" },
     }) catch return null;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term == .Exited and result.term.Exited == 0) {
+    if (result.term == .exited and result.term.exited == 0) {
         // Output format: "dxvk 2.3.1-1"
         const output = mem.trim(u8, result.stdout, " \t\n\r");
         if (mem.indexOf(u8, output, " ")) |space_idx| {
