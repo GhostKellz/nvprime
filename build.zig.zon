@@ -34,15 +34,15 @@
     .dependencies = .{
         .nvvk = .{
             .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.1-mPNRRuJyBAC01dzuXri-Vzklerv1ImaV88kY-welq9D5",
+            .hash = "nvvk-0.4.2-mPNRRiHiBQDY1P-juz9YgS2anIeMB-nNzqAY79vUrDnS",
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.1-UbzfUWf4AwA58IMXdbITa_iswda20NWy0ECwlB1dRCwf",
+            .hash = "nvhud-0.4.1-UbzfUWf4AwDNI-xBheSeI77Hd2YGym9msP4KcQvj31Ur",
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.1-ELEK3oIEAQAZjV6UX9H4d4ZDzV7eHcE1JsqFv9hxWE7j",
+            .hash = "nvlatency-0.2.1-ELEK3oIEAQDp2nCV6doUscWlNMoL2eK4_ueihT70LCZ7",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
@@ -50,11 +50,11 @@
         },
         .nvshader = .{
             .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
-            .hash = "nvshader-0.1.0-k-Y2StXtAgCWtJbTk_60gNBqPNI8OxeG1mbWWgxyYuW8",
+            .hash = "nvshader-0.1.1-k-Y2SlNXAwDmXbQ3SH6aiSs8JTIF13-yVeMhOiGvqivC",
         },
         .zeus = .{
             .url = "https://github.com/ghostkellz/zeus/archive/main.tar.gz",
-            .hash = "zeus-0.1.5-h0GTt0iHDgCxpfTf3WTmIMMOZ9QHXBRt3l_tPGbzekG4",
+            .hash = "zeus-0.1.6-h0GTt3-HDgDoeoYp5U3MqwUCDNpyTsgytgEw39Ap_4Hz",
         },
         .ghostVK = .{
             .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
