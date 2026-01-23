@@ -356,8 +356,25 @@ pub const Compositor = struct {
             };
             self.present_mode = .ghostvk;
 
-            // TODO: Register swapchain images with nvvk layer for frame injection
-            // Requires nvvk_register_swapchain_images to be implemented in nvvk
+            // Register swapchain images with nvvk layer for frame injection
+            if (gvk.device) |device| {
+                if (gvk.swapchain_images.len > 0) {
+                    const registered = nvvk.nvvk_register_swapchain_images(
+                        @ptrCast(device),
+                        @intFromPtr(gvk.swapchain),
+                        @ptrCast(gvk.swapchain_images.ptr),
+                        @intCast(gvk.swapchain_images.len),
+                        gvk.swapchain_extent.width,
+                        gvk.swapchain_extent.height,
+                        @intFromEnum(gvk.swapchain_format),
+                    );
+                    if (registered) {
+                        std.log.info("Registered {} swapchain images with nvvk for frame injection", .{gvk.swapchain_images.len});
+                    } else {
+                        std.log.warn("Failed to register swapchain images with nvvk - frame injection unavailable", .{});
+                    }
+                }
+            }
 
             std.log.info("ghostVK swapchain initialized: {}x{} ({} images, HDR: {s})", .{
                 gvk.swapchain_extent.width,
@@ -417,11 +434,22 @@ pub const Compositor = struct {
 
         // ghostVK handles presentation internally via its render loop
 
-        // TODO: Inform nvvk of the last rendered image for frame injection
-        // Requires nvvk_notify_rendered_image to be implemented in nvvk
-        // For now, just track the image index for debugging
+        // Notify nvvk of the last rendered image for frame injection
         if (self.ghostvk_runtime) |gvk| {
-            _ = gvk.last_presented_image; // Available for future nvvk integration
+            if (gvk.device) |device| {
+                if (gvk.swapchain != null and gvk.swapchain_images.len > 0) {
+                    // Get the last presented image from ghostVK using the index
+                    const image_idx = gvk.last_presented_image;
+                    if (image_idx < gvk.swapchain_images.len) {
+                        nvvk.nvvk_notify_rendered_image(
+                            @ptrCast(device),
+                            @intFromPtr(gvk.swapchain),
+                            @ptrCast(gvk.swapchain_images[image_idx]),
+                            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                        );
+                    }
+                }
+            }
         }
     }
 
