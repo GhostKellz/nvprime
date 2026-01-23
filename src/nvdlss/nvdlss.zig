@@ -22,7 +22,7 @@ pub const version = "0.1.0-dev";
 // NGX SDK C Bindings (NVIDIA Graphics Extensions)
 // ============================================================================
 
-pub const NVSDK_NGX_Result = enum(i32) {
+pub const NVSDK_NGX_Result = enum(u32) {
     success = 0x1,
     fail = 0xBAD00000,
     invalid_parameter = 0xBAD00001,
@@ -85,45 +85,45 @@ pub const NgxFunctions = struct {
         vk_get_device_proc_addr: ?*anyopaque,
         creation_node_mask: u32,
         visibility_node_mask: u32,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
-    shutdown: ?*const fn () callconv(.C) NVSDK_NGX_Result = null,
-    shutdown1: ?*const fn (?*anyopaque) callconv(.C) NVSDK_NGX_Result = null,
+    shutdown: ?*const fn () callconv(.c) NVSDK_NGX_Result = null,
+    shutdown1: ?*const fn (?*anyopaque) callconv(.c) NVSDK_NGX_Result = null,
 
     get_capability_parameters: ?*const fn (
         *?*NVSDK_NGX_Parameter,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     allocate_parameters: ?*const fn (
         *?*NVSDK_NGX_Parameter,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     destroy_parameters: ?*const fn (
         *NVSDK_NGX_Parameter,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     create_feature: ?*const fn (
         cmd_list: ?*anyopaque, // VkCommandBuffer
         feature: NVSDK_NGX_Feature,
         params: *NVSDK_NGX_Parameter,
         handle: *?*NVSDK_NGX_Handle,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     release_feature: ?*const fn (
         handle: *NVSDK_NGX_Handle,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     evaluate: ?*const fn (
         cmd_list: ?*anyopaque, // VkCommandBuffer
         handle: *NVSDK_NGX_Handle,
         params: *NVSDK_NGX_Parameter,
         callback: ?*anyopaque,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     get_feature_requirements: ?*const fn (
         feature: NVSDK_NGX_Feature,
         requirements: *NgxFeatureRequirements,
-    ) callconv(.C) NVSDK_NGX_Result = null,
+    ) callconv(.c) NVSDK_NGX_Result = null,
 
     // Library handle for cleanup
     lib_handle: ?std.DynLib = null,
@@ -827,52 +827,52 @@ pub const DlssContext = struct {
 
         // Resolve Vulkan-specific NGX functions
         self.ngx_functions.init = dynlib.lookup(
-            *const fn (u64, [*:0]const u8, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, u32, u32) callconv(.C) NVSDK_NGX_Result,
+            *const fn (u64, [*:0]const u8, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, ?*anyopaque, u32, u32) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_Init",
         );
 
         self.ngx_functions.shutdown = dynlib.lookup(
-            *const fn () callconv(.C) NVSDK_NGX_Result,
+            *const fn () callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_Shutdown",
         );
 
         self.ngx_functions.shutdown1 = dynlib.lookup(
-            *const fn (?*anyopaque) callconv(.C) NVSDK_NGX_Result,
+            *const fn (?*anyopaque) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_Shutdown1",
         );
 
         self.ngx_functions.get_capability_parameters = dynlib.lookup(
-            *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            *const fn (*?*NVSDK_NGX_Parameter) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_GetCapabilityParameters",
         );
 
         self.ngx_functions.allocate_parameters = dynlib.lookup(
-            *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            *const fn (*?*NVSDK_NGX_Parameter) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_AllocateParameters",
         );
 
         self.ngx_functions.destroy_parameters = dynlib.lookup(
-            *const fn (*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+            *const fn (*NVSDK_NGX_Parameter) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_DestroyParameters",
         );
 
         self.ngx_functions.create_feature = dynlib.lookup(
-            *const fn (?*anyopaque, NVSDK_NGX_Feature, *NVSDK_NGX_Parameter, *?*NVSDK_NGX_Handle) callconv(.C) NVSDK_NGX_Result,
+            *const fn (?*anyopaque, NVSDK_NGX_Feature, *NVSDK_NGX_Parameter, *?*NVSDK_NGX_Handle) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_CreateFeature",
         );
 
         self.ngx_functions.release_feature = dynlib.lookup(
-            *const fn (*NVSDK_NGX_Handle) callconv(.C) NVSDK_NGX_Result,
+            *const fn (*NVSDK_NGX_Handle) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_ReleaseFeature",
         );
 
         self.ngx_functions.evaluate = dynlib.lookup(
-            *const fn (?*anyopaque, *NVSDK_NGX_Handle, *NVSDK_NGX_Parameter, ?*anyopaque) callconv(.C) NVSDK_NGX_Result,
+            *const fn (?*anyopaque, *NVSDK_NGX_Handle, *NVSDK_NGX_Parameter, ?*anyopaque) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_EvaluateFeature",
         );
 
         self.ngx_functions.get_feature_requirements = dynlib.lookup(
-            *const fn (NVSDK_NGX_Feature, *NgxFeatureRequirements) callconv(.C) NVSDK_NGX_Result,
+            *const fn (NVSDK_NGX_Feature, *NgxFeatureRequirements) callconv(.c) NVSDK_NGX_Result,
             "NVSDK_NGX_VULKAN_GetFeatureRequirements",
         );
 
@@ -999,7 +999,161 @@ pub const DlssContext = struct {
     pub fn setConfig(self: *Self, config: DlssConfig) DlssError!void {
         self.config = config;
         try self.validateConfig();
-        // TODO: Recreate NGX features if needed
+
+        // Recreate NGX features if already initialized with Vulkan
+        if (self.ngx_params != null) {
+            self.destroyNgxFeatures();
+            try self.createNgxFeatures();
+        }
+    }
+
+    /// Initialize NGX with Vulkan context
+    /// This must be called after init() with a valid Vulkan context
+    pub fn initializeVulkan(
+        self: *Self,
+        vk_instance: ?*anyopaque,
+        vk_physical_device: ?*anyopaque,
+        vk_device: ?*anyopaque,
+        vk_get_instance_proc_addr: ?*anyopaque,
+        vk_get_device_proc_addr: ?*anyopaque,
+    ) DlssError!void {
+        if (self.ngx_functions.init == null) {
+            std.log.warn("NGX init function not available, using fallback mode", .{});
+            self.use_nvvk_fallback = true;
+            return;
+        }
+
+        // Application ID - use a unique ID for nvprime
+        const app_id: u64 = 0x4E565052494D4500; // "NVPRIME\0" in hex
+
+        // Data path for NGX models (uses driver-provided path)
+        const data_path: [*:0]const u8 = ".";
+
+        const result = self.ngx_functions.init.?(
+            app_id,
+            data_path,
+            vk_instance,
+            vk_physical_device,
+            vk_device,
+            vk_get_instance_proc_addr,
+            vk_get_device_proc_addr,
+            0, // creation_node_mask (single GPU)
+            0, // visibility_node_mask
+        );
+
+        if (!result.isSuccess()) {
+            std.log.err("NVSDK_NGX_VULKAN_Init failed: {s}", .{@tagName(result)});
+            self.use_nvvk_fallback = true;
+            return DlssError.InitializationFailed;
+        }
+
+        std.log.info("NGX Vulkan initialized successfully", .{});
+
+        // Allocate parameters block
+        if (self.ngx_functions.allocate_parameters) |alloc_params| {
+            const params_result = alloc_params(&self.ngx_params);
+            if (!params_result.isSuccess()) {
+                std.log.err("Failed to allocate NGX parameters: {s}", .{@tagName(params_result)});
+                return DlssError.InitializationFailed;
+            }
+        }
+
+        // Create NGX features based on configuration
+        try self.createNgxFeatures();
+    }
+
+    /// Create NGX feature handles based on current config
+    fn createNgxFeatures(self: *Self) DlssError!void {
+        if (self.ngx_functions.create_feature == null or self.ngx_params == null) {
+            return;
+        }
+
+        const create_feature = self.ngx_functions.create_feature.?;
+
+        // Create DLSS Super Resolution feature
+        if (self.config.mode == .super_resolution or self.config.mode == .frame_generation) {
+            if (self.capabilities.supports_dlss_sr) {
+                const sr_result = create_feature(
+                    null, // Command buffer not needed for creation
+                    .super_sampling,
+                    self.ngx_params.?,
+                    &self.ngx_sr_handle,
+                );
+                if (!sr_result.isSuccess()) {
+                    std.log.err("Failed to create DLSS SR feature: {s}", .{@tagName(sr_result)});
+                } else {
+                    std.log.info("DLSS Super Resolution feature created", .{});
+                }
+            }
+        }
+
+        // Create Frame Generation feature
+        if (self.config.mode == .frame_generation or self.config.mode == .multi_frame_gen) {
+            if (self.capabilities.supports_dlss_fg) {
+                const fg_result = create_feature(
+                    null,
+                    .frame_generation,
+                    self.ngx_params.?,
+                    &self.ngx_fg_handle,
+                );
+                if (!fg_result.isSuccess()) {
+                    std.log.err("Failed to create DLSS FG feature: {s}", .{@tagName(fg_result)});
+                } else {
+                    std.log.info("DLSS Frame Generation feature created", .{});
+                }
+            }
+        }
+
+        // Create Ray Reconstruction feature
+        if (self.config.mode == .ray_reconstruction) {
+            if (self.capabilities.supports_dlss_rr) {
+                const rr_result = create_feature(
+                    null,
+                    .ray_reconstruction,
+                    self.ngx_params.?,
+                    &self.ngx_rr_handle,
+                );
+                if (!rr_result.isSuccess()) {
+                    std.log.err("Failed to create DLSS RR feature: {s}", .{@tagName(rr_result)});
+                } else {
+                    std.log.info("DLSS Ray Reconstruction feature created", .{});
+                }
+            }
+        }
+    }
+
+    /// Destroy NGX feature handles
+    fn destroyNgxFeatures(self: *Self) void {
+        if (self.ngx_functions.release_feature) |release| {
+            if (self.ngx_sr_handle) |handle| {
+                _ = release(handle);
+                self.ngx_sr_handle = null;
+            }
+            if (self.ngx_fg_handle) |handle| {
+                _ = release(handle);
+                self.ngx_fg_handle = null;
+            }
+            if (self.ngx_rr_handle) |handle| {
+                _ = release(handle);
+                self.ngx_rr_handle = null;
+            }
+        }
+    }
+
+    /// Shutdown NGX
+    pub fn shutdownVulkan(self: *Self) void {
+        self.destroyNgxFeatures();
+
+        if (self.ngx_params) |params| {
+            if (self.ngx_functions.destroy_parameters) |destroy| {
+                _ = destroy(params);
+            }
+            self.ngx_params = null;
+        }
+
+        if (self.ngx_functions.shutdown) |shutdown| {
+            _ = shutdown();
+        }
     }
 
     /// Get optimal render resolution for DLSS upscaling
@@ -1011,26 +1165,111 @@ pub const DlssContext = struct {
     }
 
     /// Process frame through DLSS
-    pub fn evaluate(self: *Self, input: DlssInput) DlssError!DlssOutput {
+    pub fn evaluate(self: *Self, cmd_buffer: ?*anyopaque, input: DlssInput) DlssError!DlssOutput {
         if (!self.initialized) {
             return DlssError.InvalidState;
         }
 
         self.frame_index += 1;
 
-        // TODO: Actual NGX evaluation
-        // 1. Set input parameters (color, depth, motion vectors, exposure)
-        // 2. Call NVSDK_NGX_VULKAN_EvaluateFeature / D3D equivalent
-        // 3. Return upscaled/generated output
+        // Try real NGX evaluation if available
+        if (self.ngx_functions.evaluate != null and self.ngx_params != null) {
+            return try self.evaluateNgx(cmd_buffer, input);
+        }
 
-        _ = input;
+        // Fallback: use nvvk frame generation if available
+        if (self.use_nvvk_fallback and self.nvvk_frame_gen != null) {
+            return self.evaluateNvvkFallback(input);
+        }
 
-        // Stub output
+        // Stub output for development
         return DlssOutput{
             .frame_index = self.frame_index,
             .upscaled = self.config.mode == .super_resolution or self.config.mode == .frame_generation,
             .generated = self.config.mode == .frame_generation or self.config.mode == .multi_frame_gen,
             .generated_frame_count = if (self.config.frame_gen == .multi_3x) @as(u8, 3) else if (self.config.frame_gen == .multi_2x) @as(u8, 2) else if (self.config.mode == .frame_generation) @as(u8, 1) else @as(u8, 0),
+        };
+    }
+
+    /// Evaluate using real NGX SDK
+    fn evaluateNgx(self: *Self, cmd_buffer: ?*anyopaque, input: DlssInput) DlssError!DlssOutput {
+        const evaluate_fn = self.ngx_functions.evaluate orelse return DlssError.FeatureNotSupported;
+        const params = self.ngx_params orelse return DlssError.InvalidState;
+
+        var output = DlssOutput{
+            .frame_index = self.frame_index,
+            .upscaled = false,
+            .generated = false,
+            .generated_frame_count = 0,
+        };
+
+        // Evaluate DLSS Super Resolution
+        if (self.ngx_sr_handle) |sr_handle| {
+            // In real implementation:
+            // 1. Set NVSDK_NGX_Parameter values for input textures
+            // 2. Set render/output dimensions
+            // 3. Set jitter offset for temporal AA
+
+            const sr_result = evaluate_fn(cmd_buffer, sr_handle, params, null);
+            if (sr_result.isSuccess()) {
+                self.frames_upscaled += 1;
+                output.upscaled = true;
+            } else {
+                std.log.err("DLSS SR evaluate failed: {s}", .{@tagName(sr_result)});
+            }
+        }
+
+        // Evaluate Frame Generation
+        if (self.ngx_fg_handle) |fg_handle| {
+            const fg_result = evaluate_fn(cmd_buffer, fg_handle, params, null);
+            if (fg_result.isSuccess()) {
+                self.frames_generated += 1;
+                output.generated = true;
+                output.generated_frame_count = switch (self.config.frame_gen) {
+                    .multi_3x => 3,
+                    .multi_2x => 2,
+                    .on, .auto => 1,
+                    .off => 0,
+                };
+            } else {
+                std.log.err("DLSS FG evaluate failed: {s}", .{@tagName(fg_result)});
+            }
+        }
+
+        // Evaluate Ray Reconstruction
+        if (self.ngx_rr_handle) |rr_handle| {
+            const rr_result = evaluate_fn(cmd_buffer, rr_handle, params, null);
+            if (!rr_result.isSuccess()) {
+                std.log.err("DLSS RR evaluate failed: {s}", .{@tagName(rr_result)});
+            }
+        }
+
+        _ = input; // Input would be used to set NGX parameters
+
+        return output;
+    }
+
+    /// Fallback evaluation using nvvk frame generation
+    fn evaluateNvvkFallback(self: *Self, input: DlssInput) DlssOutput {
+        _ = input;
+
+        // nvvk provides optical flow based frame generation
+        // This is lower quality than DLSS but works on older GPUs
+        if (self.nvvk_frame_gen) |_| {
+            self.frames_generated += 1;
+            return DlssOutput{
+                .frame_index = self.frame_index,
+                .upscaled = false,
+                .generated = true,
+                .generated_frame_count = 1,
+            };
+        }
+
+        return DlssOutput{
+            .frame_index = self.frame_index,
+            .upscaled = false,
+            .generated = false,
+            .generated_frame_count = 0,
         };
     }
 
@@ -1149,7 +1388,7 @@ pub const ReflexContext = struct {
         self: *Self,
         device: *anyopaque,
         swapchain: u64,
-        get_device_proc_addr: *const fn (*anyopaque, [*:0]const u8) callconv(.C) ?*anyopaque,
+        get_device_proc_addr: *const fn (*anyopaque, [*:0]const u8) callconv(.c) ?*anyopaque,
     ) void {
         self.nvapi_ctx.setVulkanDevice(device, swapchain, get_device_proc_addr);
     }
@@ -1322,7 +1561,8 @@ pub fn detectGpuGeneration() GpuGeneration {
         if (std.Io.Dir.openFileAbsolute(io, path, .{})) |file| {
             defer file.close(io);
             var buf: [32]u8 = undefined;
-            if (file.read(io, &buf)) |len| {
+            // Use posix.read for file I/O in Zig 0.16
+            if (std.posix.read(file.handle, &buf)) |len| {
                 const device_id_str = std.mem.trim(u8, buf[0..len], " \n\r\t");
                 // Parse hex device ID (format: 0x2684 for RTX 50 series)
                 if (device_id_str.len > 2 and device_id_str[0] == '0' and device_id_str[1] == 'x') {
@@ -1372,14 +1612,15 @@ pub fn isAvailable() bool {
     };
 
     for (lib_paths) |path| {
-        if (std.DynLib.open(path)) |lib| {
+        if (std.DynLib.open(path)) |lib_val| {
+            // Make mutable copy for lookup and close
+            var lib = lib_val;
             // Library found, check for required symbol
             const has_caps = lib.lookup(
-                *const fn (*?*NVSDK_NGX_Parameter) callconv(.C) NVSDK_NGX_Result,
+                *const fn (*?*NVSDK_NGX_Parameter) callconv(.c) NVSDK_NGX_Result,
                 "NVSDK_NGX_VULKAN_GetCapabilityParameters",
             ) != null;
-            var lib_copy = lib;
-            lib_copy.close();
+            lib.close();
             if (has_caps) return true;
         } else |_| {
             continue;

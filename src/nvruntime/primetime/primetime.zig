@@ -5,17 +5,23 @@
 //!
 //! Features:
 //! - NVIDIA-optimized (direct scanout, VRR, HDR)
-//! - Low latency frame pacing
+//! - Low latency frame pacing via ghostVK
+//! - VRR-aware frame injection via nvvk
 //! - FSR/NIS upscaling support
 //! - Integration with nvlatency, nvsync, nvhud
+//! - Vulkan 1.4 support for push descriptors
 //!
 //! This is the compositor core that VENOM builds upon.
 
 const std = @import("std");
 const frame_pacing = @import("frame_pacing.zig");
+const drm = @import("drm.zig");
+const nvvk = @import("nvvk");
+const ghostvk = @import("ghostvk");
+const nvhud = @import("nvhud");
 
-// DRM is optional - only import when building with -Ddrm=true
-// const drm = @import("drm.zig");
+// Vulkan constants (from Vulkan 1.4 spec)
+const VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002;
 
 pub const version = "0.1.0-dev";
 
@@ -47,6 +53,20 @@ pub const Upscaler = enum {
     }
 };
 
+/// Config pacing mode (high-level, maps to ghostVK's PacingMode)
+pub const ConfigPacingMode = enum {
+    /// No frame pacing (unlimited)
+    none,
+    /// VSync-like CPU sleep
+    vsync,
+    /// Adaptive sync (hybrid pacing)
+    adaptive,
+    /// VRR-optimized (hybrid pacing with VRR awareness)
+    vrr,
+    /// FPS limited (CPU sleep to target)
+    limited,
+};
+
 /// Compositor configuration
 pub const Config = struct {
     /// Target output width (0 = native)
@@ -70,7 +90,7 @@ pub const Config = struct {
     /// Frame limiter (0 = disabled)
     fps_limit: u32 = 0,
     /// Pacing mode
-    pacing_mode: frame_pacing.PacingMode = .vrr,
+    pacing_mode: ConfigPacingMode = .vrr,
     /// Force specific output (e.g., "DP-1", null = auto)
     output_name: ?[]const u8 = null,
     /// Enable performance overlay
@@ -134,6 +154,31 @@ pub const CaptureMode = enum {
     copy, // Fallback copy-based capture
 };
 
+/// Swapchain presentation mode
+pub const PresentMode = enum {
+    /// No Vulkan presentation (DRM direct scanout only)
+    none,
+    /// Use ghostVK for Vulkan swapchain management
+    ghostvk,
+    /// External swapchain (provided by application)
+    external,
+};
+
+/// Swapchain info for compositor-managed presentation
+pub const SwapchainInfo = struct {
+    /// Swapchain image count
+    image_count: u32 = 0,
+    /// Swapchain format
+    format: u32 = 0,
+    /// Swapchain extent
+    width: u32 = 0,
+    height: u32 = 0,
+    /// HDR color space
+    hdr_colorspace: ghostvk.hdr.HdrColorSpace = .srgb,
+    /// Current image index
+    current_image: u32 = 0,
+};
+
 /// The compositor instance
 pub const Compositor = struct {
     allocator: std.mem.Allocator,
@@ -143,8 +188,25 @@ pub const Compositor = struct {
     // Frame pacing (ghostVK-powered with VRR awareness)
     pacer: ?frame_pacing.FramePacer = null,
 
+    // DRM backend for display control
+    drm_backend: ?drm.DrmBackend = null,
+
     // Current output info
     current_output: OutputInfo = .{},
+
+    // VRR state from nvvk
+    vrr_config: ?nvvk.VrrConfig = null,
+
+    // GhostVK runtime for Vulkan swapchain management
+    ghostvk_runtime: ?ghostvk.GhostVK = null,
+    present_mode: PresentMode = .none,
+    swapchain_info: SwapchainInfo = .{},
+
+    // nvhud overlay integration
+    overlay: ?*nvhud.Overlay = null,
+    metrics_collector: ?*nvhud.Collector = null,
+    overlay_config: nvhud.Config = .{},
+    overlay_enabled: bool = false,
 
     // Wayland socket name
     socket_name: [108]u8 = [_]u8{0} ** 108,
@@ -152,6 +214,10 @@ pub const Compositor = struct {
 
     // Running game PID
     game_pid: ?std.posix.pid_t = null,
+
+    // Frame injection state
+    frame_count: u64 = 0,
+    last_frame_time_ns: u64 = 0,
 
     /// Initialize the compositor
     pub fn init(allocator: std.mem.Allocator, config: Config) !*Compositor {
@@ -176,8 +242,30 @@ pub const Compositor = struct {
             .vrr_enabled = config.vrr,
         }) catch null;
 
-        // TODO: Initialize DRM device for mode queries when -Ddrm=true
-        // For now, use stub output detection
+        // Initialize DRM backend for display control
+        self.drm_backend = drm.DrmBackend.init(allocator) catch |err| blk: {
+            std.log.warn("DRM backend unavailable: {} - using fallback", .{err});
+            break :blk null;
+        };
+
+        // Get VRR config from DRM backend or query directly
+        if (self.drm_backend) |*backend| {
+            self.vrr_config = backend.getVrrConfig();
+
+            // Populate output info from DRM
+            if (backend.getPrimaryOutput()) |output| {
+                if (output.mode) |mode| {
+                    self.current_output.width = mode.width;
+                    self.current_output.height = mode.height;
+                    self.current_output.refresh_hz = mode.refresh_hz;
+                }
+                self.current_output.vrr_capable = output.vrr.supported;
+                self.current_output.connected = output.active;
+            }
+        } else {
+            // Fallback: try to get VRR config directly from nvvk
+            self.vrr_config = nvvk.vrr.queryFirstDisplay(allocator) catch null;
+        }
 
         self.state = .stopped;
         return self;
@@ -189,12 +277,319 @@ pub const Compositor = struct {
             self.stop() catch {};
         }
 
+        // Clean up nvhud overlay
+        if (self.overlay) |overlay_ptr| {
+            overlay_ptr.deinit();
+            self.allocator.destroy(overlay_ptr);
+            self.overlay = null;
+        }
+        if (self.metrics_collector) |collector| {
+            collector.deinit();
+            self.allocator.destroy(collector);
+            self.metrics_collector = null;
+        }
+
+        // Clean up ghostVK runtime
+        if (self.ghostvk_runtime) |*gvk| {
+            gvk.deinit();
+            self.ghostvk_runtime = null;
+        }
+
+        // Clean up DRM backend
+        if (self.drm_backend) |*backend| {
+            backend.deinit();
+        }
+
+        // Clean up VRR config if not from DRM backend
+        if (self.drm_backend == null) {
+            if (self.vrr_config) |vrr| {
+                if (vrr.display_name) |name| {
+                    self.allocator.free(name);
+                }
+            }
+        }
+
         // Clean up frame pacer
         if (self.pacer) |*p| {
             p.deinit();
         }
 
         self.allocator.destroy(self);
+    }
+
+    // =========================================================================
+    // GhostVK Swapchain Integration
+    // =========================================================================
+
+    /// Initialize ghostVK runtime for Vulkan swapchain management
+    /// This enables the compositor to manage presentation via ghostVK
+    pub fn initGhostVK(self: *Compositor) !void {
+        if (self.ghostvk_runtime != null) return; // Already initialized
+
+        const gvk_options = ghostvk.InitOptions{
+            .enable_validation = false, // Disable for production
+            .application_name = "PrimeTime",
+            .prefer_hdr = self.config.hdr,
+            .enable_frame_pacing = true,
+            .target_fps = self.config.fps_limit,
+            .pacing_mode = switch (self.config.pacing_mode) {
+                .none => .unlimited,
+                .vsync => .cpu_sleep,
+                .adaptive, .vrr => .hybrid,
+                .limited => .cpu_sleep,
+            },
+        };
+
+        self.ghostvk_runtime = ghostvk.GhostVK.init(self.allocator, gvk_options) catch |err| {
+            std.log.err("Failed to initialize ghostVK: {}", .{err});
+            return err;
+        };
+
+        // Update swapchain info from ghostVK
+        if (self.ghostvk_runtime) |gvk| {
+            self.swapchain_info = .{
+                .image_count = @intCast(gvk.swapchain_images.len),
+                .format = @intFromEnum(gvk.swapchain_format),
+                .width = gvk.swapchain_extent.width,
+                .height = gvk.swapchain_extent.height,
+                .hdr_colorspace = gvk.swapchain_colorspace,
+            };
+            self.present_mode = .ghostvk;
+
+            // TODO: Register swapchain images with nvvk layer for frame injection
+            // Requires nvvk_register_swapchain_images to be implemented in nvvk
+
+            std.log.info("ghostVK swapchain initialized: {}x{} ({} images, HDR: {s})", .{
+                gvk.swapchain_extent.width,
+                gvk.swapchain_extent.height,
+                gvk.swapchain_images.len,
+                @tagName(gvk.swapchain_colorspace),
+            });
+        }
+    }
+
+    /// Check if ghostVK swapchain is available
+    pub fn hasGhostVKSwapchain(self: *const Compositor) bool {
+        return self.ghostvk_runtime != null and self.present_mode == .ghostvk;
+    }
+
+    /// Get ghostVK swapchain info
+    pub fn getSwapchainInfo(self: *const Compositor) SwapchainInfo {
+        return self.swapchain_info;
+    }
+
+    /// Begin a frame with ghostVK
+    /// Returns the acquired swapchain image index, or null if using external presentation
+    pub fn beginFrame(self: *Compositor) ?u32 {
+        // Start frame pacing
+        if (self.pacer) |*p| {
+            p.beginFrame();
+        }
+
+        // If using ghostVK, acquire next image
+        if (self.ghostvk_runtime) |*gvk| {
+            // ghostVK handles image acquisition internally
+            self.swapchain_info.current_image = gvk.current_frame;
+            return gvk.current_frame;
+        }
+
+        return null;
+    }
+
+    /// End a frame with ghostVK
+    /// Handles frame pacing and presentation
+    pub fn endFrame(self: *Compositor) void {
+        self.frame_count += 1;
+        // Use std.time.Instant for the current time
+        if (std.time.Instant.now()) |instant| {
+            // Convert timespec to nanoseconds
+            const sec_ns: u64 = @intCast(@max(0, instant.timestamp.sec) * std.time.ns_per_s);
+            const nsec: u64 = @intCast(@max(0, instant.timestamp.nsec));
+            self.last_frame_time_ns = sec_ns + nsec;
+        } else |_| {
+            // Failed to get time, leave unchanged
+        }
+
+        // End frame pacing
+        if (self.pacer) |*p| {
+            p.endFrame();
+        }
+
+        // ghostVK handles presentation internally via its render loop
+
+        // TODO: Inform nvvk of the last rendered image for frame injection
+        // Requires nvvk_notify_rendered_image to be implemented in nvvk
+        // For now, just track the image index for debugging
+        if (self.ghostvk_runtime) |gvk| {
+            _ = gvk.last_presented_image; // Available for future nvvk integration
+        }
+    }
+
+    /// Get the ghostVK frame pacer stats
+    pub fn getGhostVKPacerStats(self: *const Compositor) ?ghostvk.frame_pacer.FramePacerStats {
+        if (self.ghostvk_runtime) |gvk| {
+            if (gvk.pacer) |*pacer| {
+                return pacer.getStats();
+            }
+        }
+        return null;
+    }
+
+    /// Synchronize VRR settings between DRM backend and ghostVK
+    pub fn syncVrrSettings(self: *Compositor) void {
+        // Get VRR config from DRM backend if available
+        var vrr_enabled = self.config.vrr;
+        var min_hz: u32 = 48;
+        var max_hz: u32 = 165;
+
+        if (self.drm_backend) |*backend| {
+            if (backend.getVrrConfig()) |vrr| {
+                vrr_enabled = vrr.enabled;
+                min_hz = vrr.min_hz;
+                max_hz = vrr.max_hz;
+            }
+        } else if (self.vrr_config) |vrr| {
+            vrr_enabled = vrr.enabled;
+            min_hz = vrr.min_hz;
+            max_hz = vrr.max_hz;
+        }
+
+        // Update ghostVK pacer if available
+        if (self.ghostvk_runtime) |*gvk| {
+            if (gvk.pacer) |*pacer| {
+                pacer.config.vrr_enabled = vrr_enabled;
+                pacer.config.vrr_min_hz = min_hz;
+                pacer.config.vrr_max_hz = max_hz;
+            }
+        }
+
+        // Update primetime pacer if available
+        if (self.pacer) |*pacer| {
+            pacer.config.vrr_enabled = vrr_enabled;
+            pacer.config.vrr_min_hz = min_hz;
+            pacer.config.vrr_max_hz = max_hz;
+        }
+    }
+
+    // =========================================================================
+    // nvhud Overlay Integration
+    // =========================================================================
+
+    /// Initialize the nvhud overlay system
+    pub fn initOverlay(self: *Compositor) !void {
+        if (self.overlay != null) return; // Already initialized
+
+        // Check if overlay should be enabled
+        if (!self.config.show_overlay and !nvhud.isOverlayEnabled()) {
+            return;
+        }
+
+        // Load default config with standard gaming HUD options
+        self.overlay_config = nvhud.Config{
+            .position = .top_left,
+            .show_fps = true,
+            .show_frametime = true,
+            .show_gpu_temp = true,
+            .show_gpu_util = true,
+            .show_vram = true,
+            .show_cpu = false,
+            .font_size = 16,
+        };
+
+        // Create metrics collector
+        const collector = try self.allocator.create(nvhud.Collector);
+        collector.* = nvhud.createCollector();
+        self.metrics_collector = collector;
+
+        // Create overlay (Vulkan context from ghostVK for future GPU-accelerated rendering)
+        const overlay_ptr = try self.allocator.create(nvhud.Overlay);
+        if (self.ghostvk_runtime) |_| {
+            // TODO: Pass Vulkan context when nvhud supports GPU-accelerated overlay
+            // gvk.device, gvk.physical_device, gvk.graphics_queue_family
+            overlay_ptr.* = nvhud.createOverlayWithConfig(self.allocator, self.overlay_config);
+        } else {
+            // Create overlay without Vulkan context
+            overlay_ptr.* = nvhud.createOverlayWithConfig(self.allocator, self.overlay_config);
+        }
+        self.overlay = overlay_ptr;
+        self.overlay_enabled = true;
+
+        std.log.info("nvhud overlay initialized (position: {s})", .{
+            @tagName(self.overlay_config.position),
+        });
+    }
+
+    /// Enable or disable the overlay
+    pub fn setOverlayEnabled(self: *Compositor, enabled: bool) void {
+        self.overlay_enabled = enabled;
+        self.config.show_overlay = enabled;
+    }
+
+    /// Check if overlay is enabled and available
+    pub fn isOverlayActive(self: *const Compositor) bool {
+        return self.overlay_enabled and self.overlay != null;
+    }
+
+    /// Update overlay metrics (collect current GPU stats)
+    pub fn updateOverlayMetrics(self: *Compositor) void {
+        if (self.metrics_collector) |collector| {
+            // Collector.collect() returns GpuMetrics, which we can use for overlay
+            _ = collector.collect();
+        }
+    }
+
+    /// Render the overlay
+    /// Should be called after the main scene is rendered
+    pub fn renderOverlay(self: *Compositor) void {
+        if (!self.overlay_enabled) return;
+
+        const overlay_ptr = self.overlay orelse return;
+
+        // Record frame timing and update metrics
+        overlay_ptr.recordFrame();
+        overlay_ptr.updateMetrics();
+
+        // Build HUD content based on current metrics
+        overlay_ptr.buildHud();
+    }
+
+    /// Get overlay configuration
+    pub fn getOverlayConfig(self: *const Compositor) nvhud.Config {
+        return self.overlay_config;
+    }
+
+    /// Set overlay position
+    pub fn setOverlayPosition(self: *Compositor, position: nvhud.Position) void {
+        self.overlay_config.position = position;
+        if (self.overlay) |overlay_ptr| {
+            // Update the overlay's internal config directly
+            overlay_ptr.cfg.position = position;
+        }
+    }
+
+    /// Get VRR configuration
+    pub fn getVrrConfig(self: *const Compositor) ?nvvk.VrrConfig {
+        return self.vrr_config;
+    }
+
+    /// Check if VRR is available and enabled
+    pub fn isVrrActive(self: *const Compositor) bool {
+        if (self.vrr_config) |vrr| {
+            return vrr.enabled;
+        }
+        return false;
+    }
+
+    /// Get optimal frame injection interval for current VRR state
+    pub fn getFrameInjectionInterval(self: *const Compositor, avg_frame_time_us: u64) u64 {
+        if (self.drm_backend) |*backend| {
+            return backend.getInjectionInterval(avg_frame_time_us);
+        }
+        if (self.vrr_config) |vrr| {
+            return vrr.calculateInjectionInterval(avg_frame_time_us);
+        }
+        // Default: half frame at 60Hz
+        return 8333;
     }
 
     /// Start the compositor
@@ -285,9 +680,10 @@ pub const Compositor = struct {
     pub fn getLatencyStats(self: *const Compositor) LatencyStats {
         if (self.pacer) |*p| {
             const stats = p.getStats();
+            const frame_time_ms = if (stats.average_fps > 0) 1000.0 / stats.average_fps else 0;
             return LatencyStats{
-                .total_latency_ms = stats.avg_frame_time_ms,
-                .cpu_frame_ms = stats.avg_frame_time_ms,
+                .total_latency_ms = @floatCast(frame_time_ms),
+                .cpu_frame_ms = @floatCast(frame_time_ms),
             };
         }
         return LatencyStats{};
@@ -297,10 +693,11 @@ pub const Compositor = struct {
     pub fn getPerfStats(self: *const Compositor) PerfStats {
         if (self.pacer) |*p| {
             const stats = p.getStats();
+            const frame_time_ms = if (stats.average_fps > 0) 1000.0 / stats.average_fps else 0;
             return PerfStats{
-                .fps = stats.current_fps,
-                .frame_time_ms = stats.avg_frame_time_ms,
-                .one_percent_low_fps = stats.one_percent_low_fps,
+                .fps = @floatCast(stats.average_fps),
+                .frame_time_ms = @floatCast(frame_time_ms),
+                .one_percent_low_fps = @floatCast(stats.average_fps * 0.9), // Estimate
                 .vrr_hz = if (stats.vrr_enabled) stats.vrr_range[1] else 0,
                 .frame_count = stats.frames_paced,
             };

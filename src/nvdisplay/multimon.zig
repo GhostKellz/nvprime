@@ -41,7 +41,8 @@ pub fn detectDisplayServer() DisplayServer {
         if (std.c.getenv("SWAYSOCK") != null) {
             return .wayland_sway;
         }
-        if (std.c.getenv("XDG_CURRENT_DESKTOP")) |desktop| {
+        if (std.c.getenv("XDG_CURRENT_DESKTOP")) |desktop_ptr| {
+            const desktop = mem.sliceTo(desktop_ptr, 0);
             if (mem.indexOf(u8, desktop, "KDE") != null) {
                 return .wayland_kwin;
             }

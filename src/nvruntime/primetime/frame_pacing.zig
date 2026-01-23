@@ -3,14 +3,29 @@
 //! Integrates with ghostVK's VRR-aware frame pacer and nvlatency for
 //! full pipeline latency control. Provides frame timing, VRR coordination,
 //! and latency optimization.
+//!
+//! ## nvvk Integration
+//!
+//! - VRR configuration via nvvk.vrr module
+//! - LFC (Low Framerate Compensation) awareness
+//! - Async sleep for non-blocking pacing
+//! - Frame injection timing calculation
 
 const std = @import("std");
 const ghostvk = @import("ghostvk");
+const nvvk = @import("nvvk");
 
 // Re-export ghostVK's frame pacer as the primary implementation
 pub const FramePacer = ghostvk.frame_pacer.FramePacer;
 pub const FramePacerConfig = ghostvk.frame_pacer.FramePacerConfig;
 pub const PacingMode = ghostvk.frame_pacer.PacingMode;
+
+// Re-export nvvk VRR types for convenience
+pub const VrrConfig = nvvk.VrrConfig;
+pub const VrrSource = nvvk.VrrSource;
+pub const LfcState = nvvk.LfcState;
+pub const AsyncSleepContext = nvvk.AsyncSleepContext;
+pub const AsyncSleepHandle = nvvk.AsyncSleepHandle;
 
 /// Frame statistics for detailed timing analysis
 pub const FrameStats = struct {
@@ -189,4 +204,214 @@ test "rolling stats" {
     try std.testing.expectEqual(@as(f32, 20.0), stats.average());
     try std.testing.expectEqual(@as(f32, 10.0), stats.min());
     try std.testing.expectEqual(@as(f32, 30.0), stats.max());
+}
+
+// =============================================================================
+// nvvk VRR Integration
+// =============================================================================
+
+/// VRR-aware frame pacing context
+pub const VrrFramePacer = struct {
+    allocator: std.mem.Allocator,
+    base_pacer: FramePacer,
+    vrr_config: ?VrrConfig = null,
+    lfc_state: LfcState = .{},
+    async_sleep_ctx: ?*AsyncSleepContext = null,
+
+    // Frame timing state
+    frame_count: u64 = 0,
+    last_frame_time_ns: i64 = 0,
+    avg_frame_time_us: u64 = 16667, // Default 60Hz
+
+    // Statistics
+    frames_in_vrr_range: u64 = 0,
+    frames_in_lfc: u64 = 0,
+    total_sleep_time_ns: u64 = 0,
+
+    /// Initialize with VRR configuration from nvvk
+    pub fn init(allocator: std.mem.Allocator, config: FramePacerConfig) !VrrFramePacer {
+        var pacer = VrrFramePacer{
+            .allocator = allocator,
+            .base_pacer = try FramePacer.init(allocator, config),
+        };
+
+        // Query VRR configuration from system
+        pacer.vrr_config = nvvk.vrr.queryFirstDisplay(allocator) catch null;
+
+        if (pacer.vrr_config) |vrr| {
+            std.log.info("VRR pacing initialized: {}-{}Hz (LFC: {}, source: {s})", .{
+                vrr.min_hz,
+                vrr.max_hz,
+                vrr.lfc_supported,
+                vrr.source.name(),
+            });
+        }
+
+        return pacer;
+    }
+
+    /// Initialize async sleep context for non-blocking pacing
+    pub fn initAsyncSleep(self: *VrrFramePacer, device: ?*anyopaque, dispatch: ?*anyopaque) !void {
+        _ = self;
+        _ = device;
+        _ = dispatch;
+        // In production: self.async_sleep_ctx = try AsyncSleepContext.init(device, dispatch, self.allocator);
+    }
+
+    /// Begin frame pacing
+    pub fn beginFrame(self: *VrrFramePacer) void {
+        self.base_pacer.beginFrame();
+    }
+
+    /// Wait for next frame with VRR awareness
+    pub fn waitForNextFrame(self: *VrrFramePacer) void {
+        const now = std.time.nanoTimestamp();
+        const frame_time_ns: u64 = if (self.last_frame_time_ns > 0)
+            @intCast(now - self.last_frame_time_ns)
+        else
+            16_666_667; // Default 60Hz
+
+        // Update average frame time
+        const frame_time_us: u64 = frame_time_ns / 1000;
+        self.avg_frame_time_us = (self.avg_frame_time_us * 7 + frame_time_us) / 8;
+
+        // Calculate current FPS
+        const current_fps: u32 = if (frame_time_us > 0)
+            @intCast(1_000_000 / frame_time_us)
+        else
+            60;
+
+        // Update LFC state if VRR is configured
+        if (self.vrr_config) |vrr| {
+            self.lfc_state.update(current_fps, vrr, self.frame_count);
+
+            if (vrr.isInRange(current_fps)) {
+                self.frames_in_vrr_range += 1;
+            }
+            if (self.lfc_state.active) {
+                self.frames_in_lfc += 1;
+            }
+        }
+
+        // Delegate to base pacer for actual sleep
+        self.base_pacer.waitForNextFrame();
+
+        self.last_frame_time_ns = now;
+        self.frame_count += 1;
+    }
+
+    /// Get optimal frame injection interval for frame generation
+    pub fn getInjectionInterval(self: *const VrrFramePacer) u64 {
+        if (self.vrr_config) |vrr| {
+            return vrr.calculateInjectionInterval(self.avg_frame_time_us);
+        }
+        // Default: half frame at 60Hz
+        return 8333;
+    }
+
+    /// Check if frame injection should be paused (LFC active)
+    pub fn shouldPauseInjection(self: *const VrrFramePacer) bool {
+        return self.lfc_state.shouldPauseInjection();
+    }
+
+    /// Get VRR-aware statistics
+    pub fn getVrrStats(self: *const VrrFramePacer) VrrPacerStats {
+        const base_stats = self.base_pacer.getStats();
+        return .{
+            .fps = base_stats.fps,
+            .avg_frame_time_ms = base_stats.avg_frame_time_ms,
+            .one_percent_low_fps = base_stats.one_percent_low_fps,
+            .vrr_enabled = self.vrr_config != null and (self.vrr_config.?.enabled),
+            .vrr_min_hz = if (self.vrr_config) |v| v.min_hz else 0,
+            .vrr_max_hz = if (self.vrr_config) |v| v.max_hz else 0,
+            .lfc_supported = if (self.vrr_config) |v| v.lfc_supported else false,
+            .lfc_active = self.lfc_state.active,
+            .frames_in_vrr_range = self.frames_in_vrr_range,
+            .frames_in_lfc = self.frames_in_lfc,
+            .total_frames = self.frame_count,
+        };
+    }
+
+    pub fn deinit(self: *VrrFramePacer) void {
+        // Clean up async sleep context
+        if (self.async_sleep_ctx) |ctx| {
+            ctx.deinit();
+            self.allocator.destroy(ctx);
+        }
+
+        // Free VRR config display name if allocated
+        if (self.vrr_config) |vrr| {
+            if (vrr.display_name) |name| {
+                self.allocator.free(name);
+            }
+        }
+
+        self.base_pacer.deinit();
+    }
+};
+
+/// VRR-aware pacing statistics
+pub const VrrPacerStats = struct {
+    fps: f32,
+    avg_frame_time_ms: f32,
+    one_percent_low_fps: f32,
+    vrr_enabled: bool,
+    vrr_min_hz: u32,
+    vrr_max_hz: u32,
+    lfc_supported: bool,
+    lfc_active: bool,
+    frames_in_vrr_range: u64,
+    frames_in_lfc: u64,
+    total_frames: u64,
+
+    /// Calculate percentage of frames in VRR range
+    pub fn vrrRangePercent(self: VrrPacerStats) f32 {
+        if (self.total_frames == 0) return 0;
+        return @as(f32, @floatFromInt(self.frames_in_vrr_range)) / @as(f32, @floatFromInt(self.total_frames)) * 100.0;
+    }
+
+    /// Calculate percentage of frames in LFC mode
+    pub fn lfcPercent(self: VrrPacerStats) f32 {
+        if (self.total_frames == 0) return 0;
+        return @as(f32, @floatFromInt(self.frames_in_lfc)) / @as(f32, @floatFromInt(self.total_frames)) * 100.0;
+    }
+};
+
+/// Query VRR availability from nvvk
+pub fn isVrrAvailable(allocator: std.mem.Allocator) bool {
+    return nvvk.vrr.isVrrAvailable(allocator);
+}
+
+/// Get VRR system status
+pub fn getVrrStatus(allocator: std.mem.Allocator) !nvvk.VrrStatus {
+    return nvvk.vrr.getSystemStatus(allocator);
+}
+
+/// Create a VRR-optimized frame pacer
+pub fn createVrrAwarePacer(allocator: std.mem.Allocator, target_fps: u32) !VrrFramePacer {
+    return VrrFramePacer.init(allocator, .{
+        .target_fps = target_fps,
+        .mode = .hybrid,
+        .vrr_enabled = true,
+        .busy_wait_threshold_ns = 500_000, // 0.5ms for gaming
+    });
+}
+
+test "vrr pacer stats" {
+    const stats = VrrPacerStats{
+        .fps = 120,
+        .avg_frame_time_ms = 8.33,
+        .one_percent_low_fps = 100,
+        .vrr_enabled = true,
+        .vrr_min_hz = 48,
+        .vrr_max_hz = 144,
+        .lfc_supported = true,
+        .lfc_active = false,
+        .frames_in_vrr_range = 90,
+        .frames_in_lfc = 10,
+        .total_frames = 100,
+    };
+
+    try std.testing.expectEqual(@as(f32, 90.0), stats.vrrRangePercent());
+    try std.testing.expectEqual(@as(f32, 10.0), stats.lfcPercent());
 }

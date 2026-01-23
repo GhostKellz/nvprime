@@ -9,11 +9,14 @@
 //! - VRR range detection (min/max Hz)
 //! - Page flip with VBlank synchronization
 //! - Multi-monitor enumeration
+//! - NVIDIA-specific VRR property detection
+//! - Integration with nvvk VRR module
 //!
 //! Note: This module requires libdrm. Build with -Ddrm=true to enable.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const nvvk = @import("nvvk");
 
 const log = std.log.scoped(.drm);
 
@@ -24,6 +27,7 @@ const c = if (has_drm) @cImport({
     @cInclude("xf86drm.h");
     @cInclude("xf86drmMode.h");
     @cInclude("drm_fourcc.h");
+    @cInclude("drm_mode.h");
 }) else struct {
     // Stub constants when DRM not available
     pub const DRM_MODE_CONNECTED: c_int = 1;
@@ -34,7 +38,20 @@ const c = if (has_drm) @cImport({
     pub const DRM_VBLANK_HIGH_CRTC_SHIFT: u32 = 1;
     pub const DRM_VBLANK_HIGH_CRTC_MASK: u32 = 0;
 
-    pub const drmModeRes = opaque {};
+    pub const drmModeRes = extern struct {
+        count_fbs: c_int = 0,
+        fbs: ?[*]u32 = null,
+        count_crtcs: c_int = 0,
+        crtcs: ?[*]u32 = null,
+        count_connectors: c_int = 0,
+        connectors: ?[*]u32 = null,
+        count_encoders: c_int = 0,
+        encoders: ?[*]u32 = null,
+        min_width: u32 = 0,
+        max_width: u32 = 0,
+        min_height: u32 = 0,
+        max_height: u32 = 0,
+    };
     pub const drmModeConnector = extern struct {
         connection: c_int = 0,
         connector_type: u32 = 0,
@@ -60,6 +77,24 @@ const c = if (has_drm) @cImport({
         } = .{},
     };
 
+    pub const drmModeObjectProperties = extern struct {
+        count_props: u32 = 0,
+        props: ?[*]u32 = null,
+        prop_values: ?[*]u64 = null,
+    };
+
+    pub const drmModePropertyRes = extern struct {
+        prop_id: u32 = 0,
+        flags: u32 = 0,
+        name: [32]u8 = [_]u8{0} ** 32,
+        count_values: c_int = 0,
+        values: ?[*]u64 = null,
+        count_enums: c_int = 0,
+        enums: ?*anyopaque = null,
+        count_blobs: c_int = 0,
+        blob_ids: ?[*]u32 = null,
+    };
+
     pub fn drmModeGetResources(_: c_int) ?*drmModeRes {
         return null;
     }
@@ -68,20 +103,44 @@ const c = if (has_drm) @cImport({
         return null;
     }
     pub fn drmModeFreeConnector(_: *drmModeConnector) void {}
-    pub fn drmModeObjectGetProperties(_: c_int, _: u32, _: u32) ?*anyopaque {
+    pub fn drmModeObjectGetProperties(_: c_int, _: u32, _: u32) ?*drmModeObjectProperties {
         return null;
     }
-    pub fn drmModeFreeObjectProperties(_: ?*anyopaque) void {}
-    pub fn drmModeGetProperty(_: c_int, _: u32) ?*anyopaque {
+    pub fn drmModeFreeObjectProperties(_: ?*drmModeObjectProperties) void {}
+    pub fn drmModeGetProperty(_: c_int, _: u32) ?*drmModePropertyRes {
         return null;
     }
-    pub fn drmModeFreeProperty(_: ?*anyopaque) void {}
+    pub fn drmModeFreeProperty(_: ?*drmModePropertyRes) void {}
     pub fn drmModeObjectSetProperty(_: c_int, _: u32, _: u32, _: u32, _: u64) c_int {
         return -1;
     }
     pub fn drmWaitVBlank(_: c_int, _: *drmVBlank) c_int {
         return -1;
     }
+
+    // Atomic modesetting stubs
+    pub const drmModeAtomicReq = opaque {};
+    pub const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0002;
+    pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0004;
+    pub const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x0001;
+    pub const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x0002;
+
+    pub fn drmModeAtomicAlloc() ?*drmModeAtomicReq {
+        return null;
+    }
+    pub fn drmModeAtomicFree(_: ?*drmModeAtomicReq) void {}
+    pub fn drmModeAtomicAddProperty(_: ?*drmModeAtomicReq, _: u32, _: u32, _: u64) c_int {
+        return -1;
+    }
+    pub fn drmModeAtomicCommit(_: c_int, _: ?*drmModeAtomicReq, _: u32, _: ?*anyopaque) c_int {
+        return -1;
+    }
+    pub fn drmSetClientCap(_: c_int, _: u64, _: u64) c_int {
+        return -1;
+    }
+
+    pub const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
+    pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
 };
 
 /// DRM device handle
@@ -90,11 +149,32 @@ pub const Device = struct {
     resources: ?*c.drmModeRes,
 
     pub fn open(path: []const u8) !Device {
-        const fd = try std.posix.open(
-            @ptrCast(path.ptr),
+        // Convert path to null-terminated string for openatZ
+        var path_buf: [256]u8 = undefined;
+        if (path.len >= path_buf.len) return error.NameTooLong;
+        @memcpy(path_buf[0..path.len], path);
+        path_buf[path.len] = 0;
+        const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0].ptr);
+
+        const fd = try std.posix.openatZ(
+            std.posix.AT.FDCWD,
+            path_z,
             .{ .ACCMODE = .RDWR, .CLOEXEC = true },
             0,
         );
+
+        // Enable atomic modesetting capability
+        if (has_drm) {
+            // Enable universal planes (required for atomic)
+            _ = c.drmSetClientCap(fd, c.DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+            // Enable atomic modesetting
+            const atomic_ret = c.drmSetClientCap(fd, c.DRM_CLIENT_CAP_ATOMIC, 1);
+            if (atomic_ret == 0) {
+                log.debug("Atomic modesetting enabled for {s}", .{path});
+            } else {
+                log.debug("Atomic modesetting not available for {s}", .{path});
+            }
+        }
 
         const resources = c.drmModeGetResources(fd);
 
@@ -139,14 +219,15 @@ pub const Device = struct {
     /// Get connector info
     pub fn getConnector(self: *const Device, index: u32) ?Connector {
         if (self.resources) |res| {
-            if (index >= res.count_connectors) return null;
-            const conn_id = res.connectors[index];
+            if (index >= @as(u32, @intCast(res.count_connectors))) return null;
+            const connectors = res.connectors orelse return null;
+            const conn_id = connectors[index];
             const conn = c.drmModeGetConnector(self.fd, conn_id);
             if (conn == null) return null;
 
             return Connector{
                 .id = conn_id,
-                .handle = conn,
+                .handle = conn.?,
                 .fd = self.fd,
             };
         }
@@ -155,14 +236,8 @@ pub const Device = struct {
 
     /// Check if VRR is supported
     pub fn supportsVrr(self: *const Device, connector_id: u32) bool {
-        var prop_id: u32 = 0;
-        if (self.findProperty(connector_id, c.DRM_MODE_OBJECT_CONNECTOR, "VRR_ENABLED")) |id| {
-            prop_id = id;
-        } else {
-            return false;
-        }
-        _ = prop_id;
-        return true;
+        // VRR is supported if the VRR_ENABLED property exists
+        return self.findProperty(connector_id, c.DRM_MODE_OBJECT_CONNECTOR, "VRR_ENABLED") != null;
     }
 
     /// Set VRR enabled/disabled
@@ -176,19 +251,22 @@ pub const Device = struct {
     }
 
     fn findProperty(self: *const Device, object_id: u32, object_type: u32, name: []const u8) ?u32 {
-        const props = c.drmModeObjectGetProperties(self.fd, object_id, object_type);
-        if (props == null) return null;
-        defer c.drmModeFreeObjectProperties(props);
+        const props_ptr = c.drmModeObjectGetProperties(self.fd, object_id, object_type);
+        if (props_ptr == null) return null;
+        const props = props_ptr.?;
+        defer c.drmModeFreeObjectProperties(props_ptr);
+
+        const prop_ids = props.props orelse return null;
 
         var i: u32 = 0;
-        while (i < props.?.count_props) : (i += 1) {
-            const prop = c.drmModeGetProperty(self.fd, props.?.props[i]);
+        while (i < props.count_props) : (i += 1) {
+            const prop = c.drmModeGetProperty(self.fd, prop_ids[i]);
             if (prop == null) continue;
             defer c.drmModeFreeProperty(prop);
 
             const prop_name = std.mem.span(@as([*:0]const u8, @ptrCast(&prop.?.name)));
             if (std.mem.eql(u8, prop_name, name)) {
-                return props.?.props[i];
+                return prop_ids[i];
             }
         }
         return null;
@@ -196,19 +274,23 @@ pub const Device = struct {
 
     /// Get the current value of a connector property
     pub fn getPropertyValue(self: *const Device, connector_id: u32, name: []const u8) ?u64 {
-        const props = c.drmModeObjectGetProperties(self.fd, connector_id, c.DRM_MODE_OBJECT_CONNECTOR);
-        if (props == null) return null;
-        defer c.drmModeFreeObjectProperties(props);
+        const props_ptr = c.drmModeObjectGetProperties(self.fd, connector_id, c.DRM_MODE_OBJECT_CONNECTOR);
+        if (props_ptr == null) return null;
+        const props = props_ptr.?;
+        defer c.drmModeFreeObjectProperties(props_ptr);
+
+        const prop_ids = props.props orelse return null;
+        const prop_values = props.prop_values orelse return null;
 
         var i: u32 = 0;
-        while (i < props.?.count_props) : (i += 1) {
-            const prop = c.drmModeGetProperty(self.fd, props.?.props[i]);
+        while (i < props.count_props) : (i += 1) {
+            const prop = c.drmModeGetProperty(self.fd, prop_ids[i]);
             if (prop == null) continue;
             defer c.drmModeFreeProperty(prop);
 
             const prop_name = std.mem.span(@as([*:0]const u8, @ptrCast(&prop.?.name)));
             if (std.mem.eql(u8, prop_name, name)) {
-                return props.?.prop_values[i];
+                return prop_values[i];
             }
         }
         return null;
@@ -240,7 +322,8 @@ pub const Device = struct {
         // Fallback: try to get from EDID-derived properties
         if (caps.max_refresh_hz == 0) {
             // Look at available modes for the highest refresh rate
-            if (self.getConnectorById(connector_id)) |*conn| {
+            if (self.getConnectorById(connector_id)) |conn_val| {
+                var conn = conn_val;
                 defer conn.deinit();
                 var max_hz: u32 = 0;
                 var i: u32 = 0;
@@ -429,6 +512,7 @@ pub const AtomicRequest = struct {
     allocator: std.mem.Allocator,
     fd: std.posix.fd_t,
     properties: std.ArrayList(PropertyChange),
+    atomic_req: ?*c.drmModeAtomicReq,
 
     pub const PropertyChange = struct {
         object_id: u32,
@@ -436,49 +520,123 @@ pub const AtomicRequest = struct {
         value: u64,
     };
 
+    pub const CommitFlags = struct {
+        pub const NONBLOCK: u32 = c.DRM_MODE_ATOMIC_NONBLOCK;
+        pub const ALLOW_MODESET: u32 = c.DRM_MODE_ATOMIC_ALLOW_MODESET;
+        pub const PAGE_FLIP_EVENT: u32 = c.DRM_MODE_PAGE_FLIP_EVENT;
+        pub const PAGE_FLIP_ASYNC: u32 = c.DRM_MODE_PAGE_FLIP_ASYNC;
+    };
+
+    pub const Error = error{
+        AllocationFailed,
+        AddPropertyFailed,
+        CommitFailed,
+        NotSupported,
+    };
+
     pub fn init(allocator: std.mem.Allocator, fd: std.posix.fd_t) AtomicRequest {
         return .{
             .allocator = allocator,
             .fd = fd,
             .properties = std.ArrayList(PropertyChange).init(allocator),
+            .atomic_req = if (has_drm) c.drmModeAtomicAlloc() else null,
         };
     }
 
     pub fn deinit(self: *AtomicRequest) void {
+        if (self.atomic_req) |req| {
+            c.drmModeAtomicFree(req);
+        }
         self.properties.deinit();
     }
 
     /// Add a property change to the request
-    pub fn addProperty(self: *AtomicRequest, object_id: u32, property_id: u32, value: u64) !void {
+    pub fn addProperty(self: *AtomicRequest, object_id: u32, property_id: u32, value: u64) Error!void {
+        // Track locally for debugging/logging
         try self.properties.append(.{
             .object_id = object_id,
             .property_id = property_id,
             .value = value,
         });
+
+        // Add to libdrm atomic request
+        if (has_drm) {
+            if (self.atomic_req) |req| {
+                const ret = c.drmModeAtomicAddProperty(req, object_id, property_id, value);
+                if (ret < 0) {
+                    log.err("Failed to add atomic property: obj={} prop={} val={}", .{
+                        object_id,
+                        property_id,
+                        value,
+                    });
+                    return Error.AddPropertyFailed;
+                }
+            } else {
+                return Error.AllocationFailed;
+            }
+        }
     }
 
     /// Commit the atomic request
-    pub fn commit(self: *AtomicRequest, flags: u32) !void {
-        // In actual implementation with libdrm:
-        // - Create drmModeAtomicReq
-        // - Add all properties
-        // - Call drmModeAtomicCommit
-        _ = flags;
-
+    pub fn commit(self: *AtomicRequest, flags: u32) Error!void {
         if (!has_drm) {
             log.debug("Atomic commit (stub): {} properties", .{self.properties.items.len});
             return;
         }
 
-        // TODO: Real atomic commit when libdrm is available
-        for (self.properties.items) |prop| {
-            log.debug("Atomic set: obj={} prop={} val={}", .{ prop.object_id, prop.property_id, prop.value });
+        if (self.atomic_req) |req| {
+            const ret = c.drmModeAtomicCommit(self.fd, req, flags, null);
+            if (ret != 0) {
+                const errno = std.posix.errno(@intCast(ret));
+                log.err("Atomic commit failed: {} (flags=0x{x}, {} properties)", .{
+                    errno,
+                    flags,
+                    self.properties.items.len,
+                });
+                return Error.CommitFailed;
+            }
+
+            log.debug("Atomic commit success: {} properties (flags=0x{x})", .{
+                self.properties.items.len,
+                flags,
+            });
+        } else {
+            return Error.NotSupported;
         }
+    }
+
+    /// Commit with non-blocking flag (for page flips)
+    pub fn commitNonblock(self: *AtomicRequest) Error!void {
+        return self.commit(CommitFlags.NONBLOCK | CommitFlags.PAGE_FLIP_EVENT);
+    }
+
+    /// Commit allowing modeset (for mode changes)
+    pub fn commitModeset(self: *AtomicRequest) Error!void {
+        return self.commit(CommitFlags.ALLOW_MODESET);
+    }
+
+    /// Test commit without applying (DRM_MODE_ATOMIC_TEST_ONLY)
+    pub fn testCommit(self: *AtomicRequest) Error!void {
+        const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+        return self.commit(DRM_MODE_ATOMIC_TEST_ONLY);
     }
 
     /// Clear all pending property changes
     pub fn clear(self: *AtomicRequest) void {
         self.properties.clearRetainingCapacity();
+
+        // Recreate atomic request
+        if (has_drm) {
+            if (self.atomic_req) |req| {
+                c.drmModeAtomicFree(req);
+            }
+            self.atomic_req = c.drmModeAtomicAlloc();
+        }
+    }
+
+    /// Get count of pending property changes
+    pub fn count(self: *const AtomicRequest) usize {
+        return self.properties.items.len;
     }
 };
 
@@ -536,6 +694,14 @@ pub const DrmBackend = struct {
     total_frames: u64 = 0,
     dropped_frames: u64 = 0,
 
+    // nvvk VRR integration
+    vrr_config: ?nvvk.VrrConfig = null,
+    lfc_state: nvvk.LfcState = .{},
+
+    // Atomic modesetting state
+    atomic_supported: bool = false,
+    current_fb_id: u32 = 0,
+
     const Self = @This();
 
     pub const InitError = error{
@@ -548,9 +714,9 @@ pub const DrmBackend = struct {
     pub fn init(allocator: std.mem.Allocator) InitError!Self {
         var self = Self{
             .allocator = allocator,
-            .outputs = std.ArrayList(OutputState).init(allocator),
+            .outputs = .{},
         };
-        errdefer self.outputs.deinit();
+        errdefer self.outputs.deinit(allocator);
 
         // Try to open DRM device
         self.device = Device.openDefault() catch |err| {
@@ -566,9 +732,28 @@ pub const DrmBackend = struct {
             return error.NoConnectedOutputs;
         }
 
+        // Query VRR configuration from nvvk/nvsync
+        self.vrr_config = nvvk.vrr.queryFirstDisplay(allocator) catch null;
+
+        // Check for atomic modesetting support
+        self.atomic_supported = self.checkAtomicSupport();
+
         self.initialized = true;
 
-        log.info("DRM backend initialized: {} output(s)", .{self.outputs.items.len});
+        log.info("DRM backend initialized: {} output(s), atomic: {}", .{
+            self.outputs.items.len,
+            self.atomic_supported,
+        });
+
+        if (self.vrr_config) |vrr| {
+            log.info("  VRR: {}-{}Hz (LFC: {}, source: {s})", .{
+                vrr.min_hz,
+                vrr.max_hz,
+                vrr.lfc_supported,
+                vrr.source.name(),
+            });
+        }
+
         for (self.outputs.items) |output| {
             const mode_str = if (output.mode) |m|
                 std.fmt.allocPrint(allocator, "{}x{}@{}", .{ m.width, m.height, m.refresh_hz }) catch "?"
@@ -576,7 +761,7 @@ pub const DrmBackend = struct {
                 "no mode";
             defer if (output.mode != null) allocator.free(mode_str);
 
-            log.info("  Output {}: {} (VRR: {s} {}-{}Hz)", .{
+            log.info("  Output {}: {s} (VRR: {s} {}-{}Hz)", .{
                 output.connector_id,
                 mode_str,
                 if (output.vrr.supported) "supported" else "not supported",
@@ -588,20 +773,92 @@ pub const DrmBackend = struct {
         return self;
     }
 
+    /// Check if atomic modesetting is supported
+    fn checkAtomicSupport(self: *Self) bool {
+        if (!has_drm) return false;
+        if (self.device == null) return false;
+
+        // In real implementation, check DRM_CAP_ATOMIC
+        // For now, assume atomic is available on modern drivers
+        return true;
+    }
+
     /// Cleanup
     pub fn deinit(self: *Self) void {
+        // Free VRR config display name if allocated
+        if (self.vrr_config) |vrr| {
+            if (vrr.display_name) |name| {
+                self.allocator.free(name);
+            }
+        }
+
         if (self.device) |*dev| {
             dev.close();
             self.device = null;
         }
 
-        self.outputs.deinit();
+        self.outputs.deinit(self.allocator);
         self.initialized = false;
 
         log.info("DRM backend shutdown: {} frames, {} dropped", .{
             self.total_frames,
             self.dropped_frames,
         });
+    }
+
+    /// Get nvvk VRR configuration
+    pub fn getVrrConfig(self: *const Self) ?nvvk.VrrConfig {
+        return self.vrr_config;
+    }
+
+    /// Update LFC state based on current FPS
+    pub fn updateLfcState(self: *Self, current_fps: u32, frame_number: u64) void {
+        if (self.vrr_config) |cfg| {
+            self.lfc_state.update(current_fps, cfg, frame_number);
+        }
+    }
+
+    /// Check if LFC is currently active (frame injection should be paused)
+    pub fn isLfcActive(self: *const Self) bool {
+        return self.lfc_state.active;
+    }
+
+    /// Calculate optimal frame injection interval for VRR
+    pub fn getInjectionInterval(self: *const Self, avg_frame_time_us: u64) u64 {
+        if (self.vrr_config) |cfg| {
+            return cfg.calculateInjectionInterval(avg_frame_time_us);
+        }
+        // Default to half frame time at 60Hz
+        return 8333;
+    }
+
+    /// Submit an atomic page flip
+    pub fn atomicPageFlip(self: *Self, fb_id: u32, flags: u32) !void {
+        if (!self.atomic_supported) {
+            return error.AtomicNotSupported;
+        }
+
+        const output = self.getPrimaryOutput() orelse return error.NoOutput;
+        const dev = self.device orelse return error.NotInitialized;
+
+        var req = dev.createAtomicRequest(self.allocator);
+        defer req.deinit();
+
+        // Add FB_ID property change
+        // In real implementation, we would look up the plane's FB_ID property
+        const fb_property_id: u32 = 0x1000; // Placeholder - would be queried from DRM
+        try req.addProperty(output.crtc_id, fb_property_id, fb_id);
+
+        // If VRR is enabled, we might want to adjust timing
+        if (self.vrr_config != null and output.vrr.enabled) {
+            // VRR-aware flip - don't force vsync timing
+            try req.commit(flags | 0x0100); // DRM_MODE_PAGE_FLIP_ASYNC
+        } else {
+            try req.commit(flags);
+        }
+
+        self.current_fb_id = fb_id;
+        self.pending_flips += 1;
     }
 
     /// Enumerate connected outputs
@@ -611,7 +868,8 @@ pub const DrmBackend = struct {
         const conn_count = dev.getConnectorCount();
         var i: u32 = 0;
         while (i < conn_count) : (i += 1) {
-            if (dev.getConnector(i)) |*conn| {
+            if (dev.getConnector(i)) |conn_val| {
+                var conn = conn_val;
                 defer conn.deinit();
 
                 if (!conn.isConnected()) continue;
@@ -619,7 +877,7 @@ pub const DrmBackend = struct {
                 const mode = conn.getPreferredMode();
                 const vrr = dev.getVrrCapabilities(conn.id);
 
-                try self.outputs.append(.{
+                try self.outputs.append(self.allocator, .{
                     .connector_id = conn.id,
                     .crtc_id = 0, // Would need to be assigned from CRTC enumeration
                     .active = true,

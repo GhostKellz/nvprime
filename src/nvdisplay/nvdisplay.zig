@@ -251,26 +251,20 @@ pub const ColorFormat = enum {
 
 /// Apply display configuration
 pub fn configure(display_name: []const u8, config: DisplayConfig) !void {
-    const allocator = std.heap.page_allocator;
-
-    // Apply resolution/refresh via multimon
-    var resolution_str: [32]u8 = undefined;
-    const res_len = (std.fmt.bufPrint(&resolution_str, "{d}x{d}", .{ config.width, config.height }) catch return error.InvalidConfig).len;
-
-    // Use multimon to set resolution - this handles Wayland/X11 abstraction
-    const current_layout = multimon.getLayout(allocator) catch return error.NotSupported;
-    _ = current_layout;
-
-    // Configure using the appropriate display server method
+    // Enable display via multimon - this handles Wayland/X11 abstraction
     const display_server = multimon.detectDisplayServer();
     switch (display_server) {
         .wayland_hyprland, .wayland_sway, .wayland_kwin, .wayland_gnome, .wayland_other => {
-            // Wayland: Use compositor-specific tools
-            try multimon.enableDisplay(display_name, resolution_str[0..res_len], config.refresh_hz);
+            // Wayland: Use compositor-specific tools (auto mode for now)
+            try multimon.enableDisplay(display_name);
         },
         .x11 => {
-            // X11: Use xrandr
-            try multimon.enableDisplay(display_name, resolution_str[0..res_len], config.refresh_hz);
+            // X11: Use xrandr (auto mode for now)
+            try multimon.enableDisplay(display_name);
+        },
+        .unknown => {
+            // Unknown display server, try xrandr as fallback
+            try multimon.enableDisplay(display_name);
         },
     }
 
@@ -283,7 +277,7 @@ pub fn configure(display_name: []const u8, config: DisplayConfig) !void {
 
     // Configure HDR if requested
     if (config.enable_hdr) {
-        hdr.enable(display_name) catch {};
+        hdr.enable(display_name, .hdr10) catch {};
     } else {
         hdr.disable(display_name) catch {};
     }

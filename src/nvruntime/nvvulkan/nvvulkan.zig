@@ -12,11 +12,95 @@
 //! - **VK_NV_memory_decompression**: GPU-accelerated GDEFLATE decompression
 //! - **VK_NV_mesh_shader**: Mesh and task shader pipeline support
 //! - **VK_NV_ray_tracing**: Legacy ray tracing for older games/drivers
+//!
+//! ## Vulkan Version Support
+//!
+//! - **Vulkan 1.4**: Full support (recommended) - push descriptors, maintenance 6
+//! - **Vulkan 1.3**: Compatible mode - all core features work
+//! - **Vulkan 1.2**: Limited mode - some features unavailable
 
 const nvvk = @import("nvvk");
 
 // Re-export version
 pub const version = nvvk.version;
+
+// =============================================================================
+// Vulkan 1.4 API Version Support
+// =============================================================================
+
+/// Vulkan API version constants
+pub const VK_API_VERSION_1_0 = nvvk.vulkan.VK_API_VERSION_1_0;
+pub const VK_API_VERSION_1_1 = nvvk.vulkan.VK_API_VERSION_1_1;
+pub const VK_API_VERSION_1_2 = nvvk.vulkan.VK_API_VERSION_1_2;
+pub const VK_API_VERSION_1_3 = nvvk.vulkan.VK_API_VERSION_1_3;
+pub const VK_API_VERSION_1_4 = nvvk.vulkan.VK_API_VERSION_1_4;
+
+/// Minimum required API version for nvvk functionality
+pub const NVVK_MIN_API_VERSION = nvvk.vulkan.NVVK_MIN_API_VERSION;
+/// Recommended API version for full feature support (Vulkan 1.4)
+pub const NVVK_RECOMMENDED_API_VERSION = nvvk.vulkan.NVVK_RECOMMENDED_API_VERSION;
+
+/// Check if an API version supports Vulkan 1.4 features
+pub const supportsVulkan14 = nvvk.vulkan.supportsVulkan14;
+
+/// Check if an API version supports Vulkan 1.3 features
+pub const supportsVulkan13 = nvvk.vulkan.supportsVulkan13;
+
+/// Get human-readable feature set name for a given API version
+pub const getFeatureSetName = nvvk.vulkan.getFeatureSetName;
+
+/// Make API version from components
+pub const makeApiVersion = nvvk.vulkan.makeApiVersion;
+
+/// Extract major version from API version
+pub const apiVersionMajor = nvvk.vulkan.apiVersionMajor;
+
+/// Extract minor version from API version
+pub const apiVersionMinor = nvvk.vulkan.apiVersionMinor;
+
+/// Extract patch version from API version
+pub const apiVersionPatch = nvvk.vulkan.apiVersionPatch;
+
+// =============================================================================
+// Vulkan 1.4 Promoted Extension Types
+// =============================================================================
+
+/// Push descriptor properties (Vulkan 1.4 core, promoted from VK_KHR_push_descriptor)
+pub const VkPhysicalDevicePushDescriptorProperties = nvvk.vulkan.VkPhysicalDevicePushDescriptorProperties;
+
+/// Maintenance 6 features (Vulkan 1.4 core)
+pub const VkPhysicalDeviceMaintenance6Features = nvvk.vulkan.VkPhysicalDeviceMaintenance6Features;
+
+/// Maintenance 6 properties (Vulkan 1.4 core)
+pub const VkPhysicalDeviceMaintenance6Properties = nvvk.vulkan.VkPhysicalDeviceMaintenance6Properties;
+
+/// Push descriptor set info (Vulkan 1.4 core)
+pub const VkPushDescriptorSetInfo = nvvk.vulkan.VkPushDescriptorSetInfo;
+
+/// Push constants info (Vulkan 1.4 core)
+pub const VkPushConstantsInfo = nvvk.vulkan.VkPushConstantsInfo;
+
+/// Dynamic rendering local read features (Vulkan 1.4 core)
+pub const VkPhysicalDeviceDynamicRenderingLocalReadFeatures = nvvk.vulkan.VkPhysicalDeviceDynamicRenderingLocalReadFeatures;
+
+/// Scalar block layout features (Vulkan 1.4 core)
+pub const VkPhysicalDeviceScalarBlockLayoutFeatures = nvvk.vulkan.VkPhysicalDeviceScalarBlockLayoutFeatures;
+
+// =============================================================================
+// Async Sleep Support
+// =============================================================================
+
+/// Async sleep context for non-blocking frame pacing
+pub const AsyncSleepContext = nvvk.AsyncSleepContext;
+
+/// Handle for async sleep requests
+pub const AsyncSleepHandle = nvvk.AsyncSleepHandle;
+
+/// Callback for async sleep completion
+pub const AsyncCallback = nvvk.AsyncCallback;
+
+/// Result of async sleep operation
+pub const AsyncResult = nvvk.AsyncResult;
 
 // Re-export Vulkan types
 pub const VkResult = nvvk.VkResult;
@@ -116,6 +200,90 @@ pub const ext_names = nvvk.ext_names;
 pub const isNvidiaGpu = nvvk.isNvidiaGpu;
 pub const getNvidiaDriverVersion = nvvk.getNvidiaDriverVersion;
 
+// Re-export driver version utilities
+pub const DriverVersion = nvvk.DriverVersion;
+pub const getDriverVersion = nvvk.getDriverVersion;
+pub const isDriverRecommended = nvvk.isDriverRecommended;
+pub const recommended_driver = nvvk.recommended_driver;
+
+// =============================================================================
+// Vulkan Version Information
+// =============================================================================
+
+/// Comprehensive Vulkan version and feature information
+pub const VulkanVersionInfo = struct {
+    /// API version number
+    api_version: u32,
+    /// Major version component
+    major: u32,
+    /// Minor version component
+    minor: u32,
+    /// Patch version component
+    patch: u32,
+    /// Human-readable feature set name
+    feature_set: []const u8,
+    /// Whether Vulkan 1.4 features are available
+    has_vulkan14: bool,
+    /// Whether Vulkan 1.3 features are available
+    has_vulkan13: bool,
+    /// Whether push descriptors are available (Vulkan 1.4 core or extension)
+    has_push_descriptors: bool,
+
+    /// Create version info from an API version number
+    pub fn fromApiVersion(api_version: u32) VulkanVersionInfo {
+        return .{
+            .api_version = api_version,
+            .major = apiVersionMajor(api_version),
+            .minor = apiVersionMinor(api_version),
+            .patch = apiVersionPatch(api_version),
+            .feature_set = getFeatureSetName(api_version),
+            .has_vulkan14 = supportsVulkan14(api_version),
+            .has_vulkan13 = supportsVulkan13(api_version),
+            .has_push_descriptors = supportsVulkan14(api_version), // Core in 1.4
+        };
+    }
+
+    /// Create version info for Vulkan 1.4
+    pub fn vulkan14() VulkanVersionInfo {
+        return fromApiVersion(VK_API_VERSION_1_4);
+    }
+
+    /// Create version info for Vulkan 1.3
+    pub fn vulkan13() VulkanVersionInfo {
+        return fromApiVersion(VK_API_VERSION_1_3);
+    }
+
+    /// Format version as string (e.g., "1.4.0")
+    pub fn format(self: VulkanVersionInfo, writer: anytype) !void {
+        try writer.print("{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
+    }
+
+    /// Check if this version meets minimum requirements
+    pub fn meetsMinimum(self: VulkanVersionInfo) bool {
+        return self.api_version >= NVVK_MIN_API_VERSION;
+    }
+
+    /// Check if this version is the recommended version
+    pub fn isRecommended(self: VulkanVersionInfo) bool {
+        return self.api_version >= NVVK_RECOMMENDED_API_VERSION;
+    }
+};
+
+/// Get recommended Vulkan version info
+pub fn getRecommendedVersion() VulkanVersionInfo {
+    return VulkanVersionInfo.fromApiVersion(NVVK_RECOMMENDED_API_VERSION);
+}
+
+/// Get minimum required Vulkan version info
+pub fn getMinimumVersion() VulkanVersionInfo {
+    return VulkanVersionInfo.fromApiVersion(NVVK_MIN_API_VERSION);
+}
+
+/// Check if a device dispatch table supports Vulkan 1.4 push descriptors
+pub fn hasPushDescriptorSupport(dispatch: *const DeviceDispatch) bool {
+    return dispatch.hasPushDescriptors();
+}
+
 /// Vulkan layer status (for layer management)
 pub const LayerStatus = enum {
     not_installed,
@@ -203,4 +371,56 @@ pub fn getLayerStatus() LayerStatus {
         return .not_installed;
     }
     return if (layer_enabled) .installed_enabled else .installed_disabled;
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+test "Vulkan 1.4 API version constants" {
+    // Verify API version encoding
+    try std.testing.expect(VK_API_VERSION_1_4 > VK_API_VERSION_1_3);
+    try std.testing.expect(VK_API_VERSION_1_3 > VK_API_VERSION_1_2);
+    try std.testing.expect(VK_API_VERSION_1_2 > VK_API_VERSION_1_1);
+
+    // Verify version extraction
+    try std.testing.expectEqual(@as(u32, 1), apiVersionMajor(VK_API_VERSION_1_4));
+    try std.testing.expectEqual(@as(u32, 4), apiVersionMinor(VK_API_VERSION_1_4));
+}
+
+test "Vulkan version detection" {
+    try std.testing.expect(supportsVulkan14(VK_API_VERSION_1_4));
+    try std.testing.expect(!supportsVulkan14(VK_API_VERSION_1_3));
+    try std.testing.expect(supportsVulkan13(VK_API_VERSION_1_3));
+    try std.testing.expect(supportsVulkan13(VK_API_VERSION_1_4));
+}
+
+test "VulkanVersionInfo struct" {
+    const v14 = VulkanVersionInfo.vulkan14();
+    try std.testing.expectEqual(@as(u32, 1), v14.major);
+    try std.testing.expectEqual(@as(u32, 4), v14.minor);
+    try std.testing.expect(v14.has_vulkan14);
+    try std.testing.expect(v14.has_vulkan13);
+    try std.testing.expect(v14.has_push_descriptors);
+    try std.testing.expect(v14.isRecommended());
+
+    const v13 = VulkanVersionInfo.vulkan13();
+    try std.testing.expectEqual(@as(u32, 1), v13.major);
+    try std.testing.expectEqual(@as(u32, 3), v13.minor);
+    try std.testing.expect(!v13.has_vulkan14);
+    try std.testing.expect(v13.has_vulkan13);
+    try std.testing.expect(v13.meetsMinimum());
+}
+
+test "version info utility functions" {
+    const recommended = getRecommendedVersion();
+    try std.testing.expect(recommended.has_vulkan14);
+
+    const minimum = getMinimumVersion();
+    try std.testing.expect(minimum.has_vulkan13);
+}
+
+test "feature set names" {
+    try std.testing.expectEqualStrings("Vulkan 1.4 (full)", getFeatureSetName(VK_API_VERSION_1_4));
+    try std.testing.expectEqualStrings("Vulkan 1.3 (compatible)", getFeatureSetName(VK_API_VERSION_1_3));
 }

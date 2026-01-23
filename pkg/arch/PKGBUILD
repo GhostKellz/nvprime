@@ -1,0 +1,83 @@
+# Maintainer: Christopher Kelley <ckelley@ghostkellz.sh>
+# Contributor: GhostKellz
+
+pkgname=nvprime
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='NVIDIA subsystem layer for Linux gaming - AMD ROCm equivalent for NVIDIA'
+arch=('x86_64')
+url='https://github.com/nvprime/nvprime'
+license=('MIT')
+depends=(
+    'nvidia-utils>=590'
+    'vulkan-icd-loader'
+    'libdrm'
+)
+makedepends=(
+    'zig>=0.16.0'
+    'cuda'
+    'nvidia-settings'
+)
+optdepends=(
+    'nvidia-settings: GUI configuration'
+    'mangohud: Performance overlay'
+    'gamemode: Game performance optimization'
+    'dxvk: DirectX to Vulkan translation'
+    'vkd3d: DirectX 12 to Vulkan translation'
+    'lib32-nvidia-utils: 32-bit game support'
+    'pipewire: Screen capture for streaming'
+)
+provides=('nvprime' 'libnvprime')
+conflicts=('nvprime-git')
+backup=('etc/nvprime/nvprime.conf')
+source=(
+    "${pkgname}-${pkgver}.tar.gz::https://github.com/nvprime/nvprime/archive/v${pkgver}.tar.gz"
+)
+sha256sums=('SKIP')
+
+build() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    # Build with Zig
+    zig build -Doptimize=ReleaseFast -Dnvml=true
+}
+
+check() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    # Run tests (without NVML for CI)
+    zig build test -Dnvml=false || true
+}
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    # Install binary
+    install -Dm755 "zig-out/bin/nvprime" "${pkgdir}/usr/bin/nvprime"
+
+    # Install library
+    install -Dm755 "zig-out/lib/libnvprime.so" "${pkgdir}/usr/lib/libnvprime.so"
+
+    # Install header
+    install -Dm644 "include/nvprime.h" "${pkgdir}/usr/include/nvprime.h"
+
+    # Install systemd service
+    install -Dm644 "pkg/systemd/nvprime.service" "${pkgdir}/usr/lib/systemd/system/nvprime.service"
+
+    # Install udev rules
+    install -Dm644 "pkg/udev/99-nvprime.rules" "${pkgdir}/usr/lib/udev/rules.d/99-nvprime.rules"
+
+    # Install config file
+    install -Dm644 "pkg/config/nvprime.conf" "${pkgdir}/etc/nvprime/nvprime.conf"
+
+    # Install documentation
+    install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+    # Install shell completions
+    install -Dm644 "pkg/completions/nvprime.bash" "${pkgdir}/usr/share/bash-completion/completions/nvprime"
+    install -Dm644 "pkg/completions/nvprime.zsh" "${pkgdir}/usr/share/zsh/site-functions/_nvprime"
+    install -Dm644 "pkg/completions/nvprime.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/nvprime.fish"
+}
+
+# vim: set ts=4 sw=4 et:

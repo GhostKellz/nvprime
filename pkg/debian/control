@@ -1,0 +1,59 @@
+Source: nvprime
+Section: utils
+Priority: optional
+Maintainer: Christopher Kelley <ckelley@ghostkellz.sh>
+Build-Depends: debhelper-compat (= 13),
+               zig (>= 0.16.0)
+Standards-Version: 4.6.0
+Homepage: https://github.com/nvprime/nvprime
+Vcs-Browser: https://github.com/nvprime/nvprime
+Vcs-Git: https://github.com/nvprime/nvprime.git
+Rules-Requires-Root: no
+
+Package: nvprime
+Architecture: amd64
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         nvidia-driver (>= 590) | nvidia-driver-590 | nvidia-driver-open,
+         libvulkan1,
+         libdrm2
+Recommends: nvidia-settings,
+            dxvk,
+            vkd3d
+Suggests: mangohud,
+          gamemode,
+          pipewire
+Description: NVIDIA subsystem layer for Linux gaming
+ NVPrime provides a comprehensive NVIDIA subsystem layer for Linux,
+ designed as AMD's ROCm equivalent but broader in scope. It offers:
+ .
+  * GPU fundamentals (clocks, P-states, voltage monitoring)
+  * Power and thermal management
+  * Display pipeline (VRR, HDR, multi-monitor)
+  * DLSS 4.5 integration with Dynamic Multi-Frame Generation
+  * Low-latency gaming via Reflex integration
+  * Game streaming infrastructure
+ .
+ NVPrime is built with zero garbage collection for optimal gaming
+ performance and integrates with DXVK, Wine/Proton, and other
+ Linux gaming components.
+
+Package: libnvprime0
+Architecture: amd64
+Section: libs
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Description: NVIDIA subsystem layer library
+ Shared library for NVPrime integration with other applications.
+ .
+ This package contains the shared library.
+
+Package: libnvprime-dev
+Architecture: amd64
+Section: libdevel
+Depends: libnvprime0 (= ${binary:Version}),
+         ${misc:Depends}
+Description: NVIDIA subsystem layer development files
+ Development files for NVPrime C API integration.
+ .
+ This package contains the header files and development libraries.

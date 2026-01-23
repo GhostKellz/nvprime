@@ -302,6 +302,172 @@ fn parseVersionString(s: []const u8) ?DxvkVersion {
     return parsed;
 }
 
+// =============================================================================
+// Vulkan 1.4 Integration
+// =============================================================================
+
+/// Check if DXVK can benefit from Vulkan 1.4 features
+pub fn supportsVulkan14Features() bool {
+    // In production: query the actual Vulkan version from nvvk
+    return nvvk.vulkan.supportsVulkan14(nvvk.vulkan.VK_API_VERSION_1_4);
+}
+
+/// Get Vulkan 1.4 optimization hints for DXVK
+pub fn getVulkan14Hints() Vulkan14Hints {
+    return .{
+        .use_push_descriptors = supportsVulkan14Features(),
+        .use_maintenance6 = supportsVulkan14Features(),
+        .use_dynamic_rendering_local_read = supportsVulkan14Features(),
+        .use_scalar_block_layout = true, // Available since Vulkan 1.2 via extension
+    };
+}
+
+/// Vulkan 1.4 optimization hints
+pub const Vulkan14Hints = struct {
+    /// Use push descriptors for faster descriptor updates
+    use_push_descriptors: bool = false,
+    /// Use maintenance 6 features
+    use_maintenance6: bool = false,
+    /// Use dynamic rendering local read
+    use_dynamic_rendering_local_read: bool = false,
+    /// Use scalar block layout for compute shaders
+    use_scalar_block_layout: bool = false,
+};
+
+// =============================================================================
+// Reflex Injection
+// =============================================================================
+
+/// Reflex injection configuration
+pub const ReflexInjection = struct {
+    /// Target application process name
+    process_name: []const u8,
+    /// Reflex mode
+    mode: nvvk.low_latency.ModeConfig,
+    /// Swapchain handle (set at runtime)
+    swapchain: u64 = 0,
+    /// Device dispatch (set at runtime)
+    dispatch: ?*const nvvk.DeviceDispatch = null,
+
+    /// Create injection config for a game
+    pub fn forGame(process_name: []const u8) ReflexInjection {
+        return .{
+            .process_name = process_name,
+            .mode = .{ .enabled = true, .boost = false },
+        };
+    }
+
+    /// Create injection config with boost mode
+    pub fn forGameWithBoost(process_name: []const u8) ReflexInjection {
+        return .{
+            .process_name = process_name,
+            .mode = .{ .enabled = true, .boost = true },
+        };
+    }
+
+    /// Check if this injection is active
+    pub fn isActive(self: *const ReflexInjection) bool {
+        return self.dispatch != null and self.swapchain != 0;
+    }
+
+    /// Apply injection to DXVK process
+    pub fn apply(self: *ReflexInjection, device: nvvk.VkDevice, swapchain: u64, getDeviceProcAddr: anytype) !void {
+        _ = getDeviceProcAddr;
+        self.swapchain = swapchain;
+        // In production: create DeviceDispatch and enable low latency mode
+        _ = device;
+    }
+};
+
+// =============================================================================
+// DXVK-NVAPI Integration
+// =============================================================================
+
+/// DXVK-NVAPI features
+pub const NvapiFeatures = struct {
+    /// NVAPI DLL loaded
+    nvapi_loaded: bool = false,
+    /// DLSS support via NVAPI
+    dlss_available: bool = false,
+    /// Reflex support via NVAPI
+    reflex_available: bool = false,
+    /// GPU architecture
+    gpu_arch: GpuArch = .unknown,
+
+    pub const GpuArch = enum {
+        unknown,
+        turing,
+        ampere,
+        ada_lovelace,
+        blackwell,
+    };
+};
+
+/// Detect DXVK-NVAPI features
+pub fn detectNvapiFeatures() NvapiFeatures {
+    var features = NvapiFeatures{};
+
+    // Check for DXVK-NVAPI environment
+    if (posix.getenv("DXVK_ENABLE_NVAPI")) |val| {
+        features.nvapi_loaded = mem.eql(u8, val, "1");
+    }
+
+    // Check for nvapi64.dll or nvapi.dll (Wine DLL overrides)
+    if (posix.getenv("WINEDLLOVERRIDES")) |overrides| {
+        if (mem.indexOf(u8, overrides, "nvapi") != null) {
+            features.nvapi_loaded = true;
+        }
+    }
+
+    if (features.nvapi_loaded) {
+        // If NVAPI is loaded, assume modern features are available
+        features.dlss_available = true;
+        features.reflex_available = true;
+
+        // Detect GPU architecture from nvvk if available
+        if (nvvk.getDriverVersion(std.heap.page_allocator)) |driver| {
+            if (driver.major >= 590) {
+                // Driver 590+ indicates recent hardware
+                features.gpu_arch = .ada_lovelace; // Assume modern for now
+            }
+        }
+    }
+
+    return features;
+}
+
+/// Generate DXVK configuration file content
+pub fn generateConfigFile(config: DxvkConfig) []const u8 {
+    // Generate dxvk.conf content
+    // This is a simplified version - in production would be more comprehensive
+    if (config.optimization_level == .experimental) {
+        return
+            \\# NVIDIA-optimized DXVK configuration
+            \\# Generated by nvprime
+            \\
+            \\dxgi.customVendorId = 10de
+            \\dxgi.nvapiHack = False
+            \\dxvk.enableAsync = True
+            \\dxvk.numCompilerThreads = 0
+            \\d3d11.samplerAnisotropy = 16
+            \\d3d11.maxFrameLatency = 1
+            \\d3d9.forceSwapchainMSAA = 0
+        ;
+    } else if (config.optimization_level == .aggressive) {
+        return
+            \\# NVIDIA-optimized DXVK configuration (aggressive)
+            \\dxgi.customVendorId = 10de
+            \\dxvk.enableAsync = True
+            \\d3d11.maxFrameLatency = 1
+        ;
+    } else {
+        return
+            \\# NVIDIA-compatible DXVK configuration
+            \\dxgi.customVendorId = 10de
+        ;
+    }
+}
+
 test "nvdxvk config" {
     const config = DxvkConfig.default();
     try std.testing.expect(config.reflex_enabled);
@@ -312,4 +478,16 @@ test "nvdxvk low latency config" {
     const config = DxvkConfig.lowLatency();
     try std.testing.expect(config.reflex_mode.boost);
     try std.testing.expectEqual(OptimizationLevel.aggressive, config.optimization_level);
+}
+
+test "vulkan 1.4 hints" {
+    const hints = getVulkan14Hints();
+    // Just verify structure works
+    _ = hints.use_push_descriptors;
+}
+
+test "reflex injection" {
+    const injection = ReflexInjection.forGameWithBoost("game.exe");
+    try std.testing.expect(injection.mode.boost);
+    try std.testing.expect(!injection.isActive());
 }

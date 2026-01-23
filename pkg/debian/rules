@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+
+# Uncomment for verbose output
+#export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	zig build -Doptimize=ReleaseFast -Dnvml=true
+
+override_dh_auto_install:
+	# Install binary
+	install -Dm755 zig-out/bin/nvprime debian/nvprime/usr/bin/nvprime
+
+	# Install library
+	install -Dm755 zig-out/lib/libnvprime.so debian/libnvprime0/usr/lib/x86_64-linux-gnu/libnvprime.so.0
+	ln -sf libnvprime.so.0 debian/libnvprime0/usr/lib/x86_64-linux-gnu/libnvprime.so
+
+	# Install header
+	install -Dm644 include/nvprime.h debian/libnvprime-dev/usr/include/nvprime.h
+
+	# Install systemd service
+	install -Dm644 pkg/systemd/nvprime.service debian/nvprime/lib/systemd/system/nvprime.service
+
+	# Install config
+	install -Dm644 pkg/config/nvprime.conf debian/nvprime/etc/nvprime/nvprime.conf
+
+override_dh_auto_test:
+	# Tests require NVIDIA hardware, skip in build environment
+	@echo "Skipping tests (requires NVIDIA hardware)"
+
+override_dh_auto_clean:
+	rm -rf zig-out .zig-cache

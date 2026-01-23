@@ -1,0 +1,25 @@
+[Unit]
+Description=NVPrime NVIDIA Subsystem Service
+Documentation=https://github.com/ghostkellz/nvprime
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=dbus
+BusName=com.nvidia.NVPrime
+ExecStart=/usr/bin/nvprime daemon
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/sys/class/drm /sys/class/hwmon
+
+# GPU access
+SupplementaryGroups=video render
+
+[Install]
+WantedBy=multi-user.target

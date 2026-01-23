@@ -4,8 +4,11 @@
 //! Uses DRM sysfs for capability detection and nvidia-settings for control.
 
 const std = @import("std");
-const fs = std.fs;
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
 const mem = std.mem;
+const posix = std.posix;
 
 /// VRR technology type
 pub const VrrType = enum {
@@ -54,29 +57,46 @@ pub const VrrState = struct {
 /// DRM sysfs path
 const DRM_SYS_DIR = "/sys/class/drm";
 
-/// Read sysfs file value
+/// Read sysfs file value using posix API
 fn readSysfs(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
-    const file = fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
+    // Convert to null-terminated path
+    var path_buf: [512]u8 = undefined;
+    if (path.len >= path_buf.len) return null;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0].ptr);
+
+    const fd = posix.openatZ(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer posix.close(fd);
 
     var buf: [256]u8 = undefined;
-    const len = file.read(&buf) catch return null;
+    const len = posix.read(fd, &buf) catch return null;
     return allocator.dupe(u8, buf[0..len]) catch null;
 }
 
-/// Read sysfs binary file (for EDID)
+/// Read sysfs binary file (for EDID) using posix API
 fn readSysfsBinary(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
-    const file = fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
+    // Convert to null-terminated path
+    var path_buf: [512]u8 = undefined;
+    if (path.len >= path_buf.len) return null;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0].ptr);
+
+    const fd = posix.openatZ(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer posix.close(fd);
 
     var buf: [512]u8 = undefined;
-    const len = file.read(&buf) catch return null;
+    const len = posix.read(fd, &buf) catch return null;
     return allocator.dupe(u8, buf[0..len]) catch null;
 }
 
+/// VRR range from EDID
+const VrrRange = struct { min: u32, max: u32 };
+
 /// Parse EDID for VRR range from Display Range Limits or CTA-861
-fn parseEdidVrrRange(edid: []const u8) struct { min: u32, max: u32 } {
-    var result = .{ .min = 48, .max = 60 };
+fn parseEdidVrrRange(edid: []const u8) VrrRange {
+    var result = VrrRange{ .min = 48, .max = 60 };
 
     if (edid.len < 128) return result;
 
@@ -162,14 +182,15 @@ fn queryNvidiaSettingsVrr() struct { gsync_enabled: bool, gsync_compat: bool } {
 /// Get VRR state for a display
 pub fn getState(display_name: []const u8) !VrrState {
     const allocator = std.heap.page_allocator;
+    const io = Io.Threaded.global_single_threaded.io();
 
     // Find connector in DRM sysfs
-    var dir = fs.cwd().openDir(DRM_SYS_DIR, .{ .iterate = true }) catch return error.NotSupported;
-    defer dir.close();
+    var dir = Dir.openDirAbsolute(io, DRM_SYS_DIR, .{ .iterate = true }) catch return error.NotSupported;
+    defer dir.close(io);
 
     var found_card: ?[]const u8 = null;
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (!mem.startsWith(u8, entry.name, "card")) continue;
         const dash_idx = mem.indexOf(u8, entry.name, "-") orelse continue;
         const connector_name = entry.name[dash_idx + 1 ..];
@@ -200,7 +221,7 @@ pub fn getState(display_name: []const u8) !VrrState {
     const edid = if (edid_path.len > 0) readSysfsBinary(allocator, edid_path) else null;
     defer if (edid) |e| allocator.free(e);
 
-    const vrr_range = if (edid) |e| parseEdidVrrRange(e) else .{ .min = 48, .max = 60 };
+    const vrr_range = if (edid) |e| parseEdidVrrRange(e) else VrrRange{ .min = 48, .max = 60 };
 
     // Query nvidia-settings for current state
     const nv_state = queryNvidiaSettingsVrr();
