@@ -17,6 +17,7 @@ const std = @import("std");
 const frame_pacing = @import("frame_pacing.zig");
 const drm = @import("drm.zig");
 const nvvk = @import("nvvk");
+const nvsync = @import("nvsync");
 const ghostvk = @import("ghostvk");
 const nvhud = @import("nvhud");
 
@@ -240,7 +241,7 @@ pub const Compositor = struct {
             .target_fps = config.fps_limit,
             .mode = pacing_mode,
             .vrr_enabled = config.vrr,
-        }) catch null;
+        });
 
         // Initialize DRM backend for display control
         self.drm_backend = drm.DrmBackend.init(allocator) catch |err| blk: {
@@ -417,15 +418,12 @@ pub const Compositor = struct {
     /// Handles frame pacing and presentation
     pub fn endFrame(self: *Compositor) void {
         self.frame_count += 1;
-        // Use std.time.Instant for the current time
-        if (std.time.Instant.now()) |instant| {
-            // Convert timespec to nanoseconds
-            const sec_ns: u64 = @intCast(@max(0, instant.timestamp.sec) * std.time.ns_per_s);
-            const nsec: u64 = @intCast(@max(0, instant.timestamp.nsec));
-            self.last_frame_time_ns = sec_ns + nsec;
-        } else |_| {
-            // Failed to get time, leave unchanged
-        }
+        // Use clock_gettime for the current time
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        const sec_ns: u64 = @intCast(@max(0, ts.sec) * std.time.ns_per_s);
+        const nsec: u64 = @intCast(@max(0, ts.nsec));
+        self.last_frame_time_ns = sec_ns + nsec;
 
         // End frame pacing
         if (self.pacer) |*p| {
@@ -734,9 +732,36 @@ pub const Compositor = struct {
     }
 
     /// Set VRR enabled
+    /// Uses nvsync to control VRR on hardware (DRM, Wayland compositor, nvidia-settings)
     pub fn setVrr(self: *Compositor, enabled: bool) void {
         self.config.vrr = enabled;
-        // TODO: When DRM backend is enabled (-Ddrm=true), set VRR on hardware
+
+        // Update frame pacer VRR awareness
+        if (self.pacer) |*p| {
+            p.config.vrr_enabled = enabled;
+        }
+
+        // Use nvsync to enable/disable VRR on hardware
+        if (enabled) {
+            nvsync.enableVrr(self.allocator, null) catch |err| {
+                std.log.warn("Failed to enable VRR via nvsync: {}", .{err});
+                // Try DRM backend directly as fallback
+                if (self.drm_backend) |*backend| {
+                    if (backend.getPrimaryOutput()) |output| {
+                        backend.enableVrr(output.connector_id) catch {};
+                    }
+                }
+            };
+        } else {
+            nvsync.disableVrr(self.allocator, null) catch |err| {
+                std.log.warn("Failed to disable VRR via nvsync: {}", .{err});
+                if (self.drm_backend) |*backend| {
+                    if (backend.getPrimaryOutput()) |output| {
+                        backend.disableVrr(output.connector_id) catch {};
+                    }
+                }
+            };
+        }
     }
 
     /// Set frame limit

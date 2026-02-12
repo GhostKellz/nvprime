@@ -25,7 +25,7 @@
     .fingerprint = 0x9f7fe50e2c3a487, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0-dev.2193+fc517bd01",
+    .minimum_zig_version = "0.16.0-dev.2335",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -34,23 +34,23 @@
     .dependencies = .{
         .nvvk = .{
             .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.3-mPNRRlSOBgApMRQKr4GruQQvQKkc7T34T_VexkxwxoGA",
+            .hash = "nvvk-0.4.4-mPNRRnaOBgBVjMdrNYVru-zzxhKf2ZwwKE1FwgD7qyQV",
         },
         .nvhud = .{
             .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.1-UbzfUWf4AwDNI-xBheSeI77Hd2YGym9msP4KcQvj31Ur",
+            .hash = "nvhud-0.4.3-UbzfUYb4AwC4s8a2xD5yXL6CSFY3q6JAin6oJDZQFDiG",
         },
         .nvlatency = .{
             .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.1-ELEK3oIEAQDp2nCV6doUscWlNMoL2eK4_ueihT70LCZ7",
+            .hash = "nvlatency-0.2.3-ELEK3pgEAQC3SKXB__6pR8a58F1BaseVLWzPas9X5Fpn",
         },
         .nvsync = .{
             .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
-            .hash = "nvsync-0.2.2-yy7g7cheAwB2lADg8nrcGSYNUSB74_JvRyulVNLh76GI",
+            .hash = "nvsync-0.2.3-yy7g7dNiAwAwdqaRZ1Ta-9Yb4O2WGWq2Go3sox1__bcU",
         },
         .nvshader = .{
             .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
-            .hash = "nvshader-0.1.1-k-Y2SlNXAwDmXbQ3SH6aiSs8JTIF13-yVeMhOiGvqivC",
+            .hash = "nvshader-0.1.2-k-Y2SgpjAwBFL01G9_oR65VZVIctyVJA1Zg-6pJx2v3R",
         },
         .zeus = .{
             .url = "https://github.com/ghostkellz/zeus/archive/main.tar.gz",
@@ -58,7 +58,7 @@
         },
         .ghostVK = .{
             .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
-            .hash = "ghostVK-0.1.0-bt87R1VKAwBXROJoSIXCseRKpfY2k3pdyo4YR8ZCZvdc",
+            .hash = "ghostVK-0.1.1-bt87RyhMAwAPWPN4oALQ465GTGBLzixQHzrjxktJ6aNI",
         },
     },
     .paths = .{

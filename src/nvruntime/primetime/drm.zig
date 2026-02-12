@@ -241,7 +241,7 @@ pub const Device = struct {
     }
 
     /// Set VRR enabled/disabled
-    pub fn setVrr(self: *Device, connector_id: u32, enabled: bool) !void {
+    pub fn setVrr(self: *const Device, connector_id: u32, enabled: bool) !void {
         const prop_id = self.findProperty(connector_id, c.DRM_MODE_OBJECT_CONNECTOR, "VRR_ENABLED") orelse
             return error.VrrNotSupported;
 
