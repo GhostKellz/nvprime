@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  ZIG_LOCAL_CACHE_DIR: /tmp/zig-cache
+  ZIG_GLOBAL_CACHE_DIR: /tmp/zig-global-cache
+
 jobs:
   build:
     name: Build & Test
