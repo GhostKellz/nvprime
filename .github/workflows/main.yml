@@ -16,27 +16,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Cache Dirs
+      - name: Setup Build Directory
         run: |
-          mkdir -p /tmp/zig-cache /tmp/zig-global
-          rm -rf .zig-cache zig-out
+          rm -rf /tmp/nvprime-build
+          cp -r . /tmp/nvprime-build
+          cd /tmp/nvprime-build
 
       - name: Zig Version
         run: zig version
-
-      - name: Fetch Dependencies
-        run: zig build --fetch --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global
 
       - name: Format Check
         run: zig fmt --check src/ build.zig
 
       - name: Build (Release)
-        run: zig build -Doptimize=ReleaseFast -Dnvml=false --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global
+        working-directory: /tmp/nvprime-build
+        run: zig build -Doptimize=ReleaseFast -Dnvml=false -j1
 
       - name: Run Tests
-        run: zig build test -Dnvml=false --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global
+        working-directory: /tmp/nvprime-build
+        run: zig build test -Dnvml=false -j1
 
       - name: Verify Binary
+        working-directory: /tmp/nvprime-build
         run: |
           file zig-out/bin/nvprime
           ./zig-out/bin/nvprime version || true
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/nvprime-build
