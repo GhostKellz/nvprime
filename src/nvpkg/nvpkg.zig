@@ -306,10 +306,10 @@ pub const ShaderCacheInfo = struct {
 pub fn getShaderCacheInfo() ShaderCacheInfo {
     const cache_path = std.c.getenv("__GL_SHADER_DISK_CACHE_PATH") orelse
         blk: {
-        const home = std.c.getenv("HOME") orelse "/home/user";
-        _ = home;
-        break :blk "~/.cache/nvidia/GLCache";
-    };
+            const home = std.c.getenv("HOME") orelse "/home/user";
+            _ = home;
+            break :blk "~/.cache/nvidia/GLCache";
+        };
 
     const info = ShaderCacheInfo{
         .path = cache_path,

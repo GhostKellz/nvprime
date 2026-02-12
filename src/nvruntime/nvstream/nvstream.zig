@@ -953,9 +953,7 @@ pub const StreamEngine = struct {
             // Update latency stats
             self.stats.avg_capture_latency_us = self.capture.capture_latency_us;
             self.stats.avg_encode_latency_us = self.encoder.avg_encode_time_us;
-            self.stats.total_latency_ms = @as(f32, @floatFromInt(
-                self.stats.avg_capture_latency_us + self.stats.avg_encode_latency_us
-            )) / 1000.0;
+            self.stats.total_latency_ms = @as(f32, @floatFromInt(self.stats.avg_capture_latency_us + self.stats.avg_encode_latency_us)) / 1000.0;
 
             self.allocator.free(@constCast(packet.data));
         }

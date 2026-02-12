@@ -170,5 +170,4 @@ pub fn build(b: *std.Build) void {
     // Check step (compile without running)
     const check_step = b.step("check", "Check if the code compiles");
     check_step.dependOn(&exe.step);
-
 }
