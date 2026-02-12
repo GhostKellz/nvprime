@@ -18,6 +18,16 @@ jobs:
         with:
           path: src
 
+      - name: Debug filesystem
+        run: |
+          echo "=== Mount info ==="
+          mount | grep -E "(tmp|overlay)" || true
+          df -h /tmp
+          echo "=== Test atomic ops ==="
+          touch /tmp/test_atomic_$$
+          ln /tmp/test_atomic_$$ /tmp/test_atomic_link_$$ && echo "Hard links work" || echo "Hard links FAIL"
+          rm -f /tmp/test_atomic_$$ /tmp/test_atomic_link_$$
+
       - name: Setup tmpfs build
         run: |
           rm -rf /tmp/nvprime
