@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  ZIG_LOCAL_CACHE_DIR: /tmp/zig-cache
+  ZIG_GLOBAL_CACHE_DIR: /tmp/zig-global
+
 jobs:
   build:
     name: Build & Test
@@ -16,32 +20,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Build Directory
-        run: |
-          rm -rf /tmp/nvprime-build
-          cp -r . /tmp/nvprime-build
-          cd /tmp/nvprime-build
-
       - name: Zig Version
         run: zig version
+
+      - name: Fetch Dependencies
+        run: zig build --fetch
 
       - name: Format Check
         run: zig fmt --check src/ build.zig
 
       - name: Build (Release)
-        working-directory: /tmp/nvprime-build
-        run: zig build -Doptimize=ReleaseFast -Dnvml=false -j1
+        run: zig build -Doptimize=ReleaseFast -Dnvml=false
 
       - name: Run Tests
-        working-directory: /tmp/nvprime-build
-        run: zig build test -Dnvml=false -j1
+        run: zig build test -Dnvml=false
 
       - name: Verify Binary
-        working-directory: /tmp/nvprime-build
         run: |
           file zig-out/bin/nvprime
           ./zig-out/bin/nvprime version || true
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf /tmp/nvprime-build
