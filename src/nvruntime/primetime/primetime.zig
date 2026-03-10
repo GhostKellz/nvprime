@@ -15,7 +15,7 @@
 
 const std = @import("std");
 const frame_pacing = @import("frame_pacing.zig");
-const drm = @import("drm.zig");
+pub const drm = @import("drm.zig");
 const nvvk = @import("nvvk");
 const nvsync = @import("nvsync");
 const ghostvk = @import("ghostvk");

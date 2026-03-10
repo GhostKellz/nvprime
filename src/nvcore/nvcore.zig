@@ -10,6 +10,7 @@ pub const clocks = @import("clocks.zig");
 pub const pstates = @import("pstates.zig");
 pub const boost = @import("boost.zig");
 pub const voltage = @import("voltage.zig");
+pub const memory = @import("memory.zig");
 
 /// GPU core state snapshot
 pub const CoreState = struct {

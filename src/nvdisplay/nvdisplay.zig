@@ -13,6 +13,7 @@ pub const gsync = @import("gsync.zig");
 pub const hdr = @import("hdr.zig");
 pub const vrr = @import("vrr.zig");
 pub const multimon = @import("multimon.zig");
+pub const dp_link = @import("dp_link.zig");
 
 // Re-export nvsync for DRM-based display management
 pub const nvsync = @import("nvsync");

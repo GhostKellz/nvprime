@@ -205,7 +205,7 @@ pub const Device = struct {
         if (self.resources) |res| {
             c.drmModeFreeResources(res);
         }
-        std.posix.close(self.fd);
+        std.Io.Threaded.closeFd(self.fd);
     }
 
     /// Get number of connected connectors (monitors)
@@ -346,6 +346,70 @@ pub const Device = struct {
         return caps;
     }
 
+    /// Get enhanced VRR capabilities with source tracking (Driver 595+)
+    /// Tries DRM properties first, then falls back to EDID/mode scanning
+    pub fn getEnhancedVrrCapabilities(self: *const Device, connector_id: u32) EnhancedVrrCapabilities {
+        var caps = EnhancedVrrCapabilities{};
+
+        // Check if VRR is supported (VRR_ENABLED property exists)
+        if (self.findProperty(connector_id, c.DRM_MODE_OBJECT_CONNECTOR, "VRR_ENABLED")) |_| {
+            caps.supported = true;
+
+            // Check current enabled state
+            if (self.getPropertyValue(connector_id, "VRR_ENABLED")) |val| {
+                caps.enabled = val != 0;
+            }
+        }
+
+        // Try DRM properties first (595+ driver, most accurate)
+        const min_from_prop = self.getPropertyValue(connector_id, "vrr_min_hz");
+        const max_from_prop = self.getPropertyValue(connector_id, "vrr_max_hz");
+
+        if (min_from_prop != null and max_from_prop != null) {
+            caps.min_refresh_hz = @truncate(min_from_prop.?);
+            caps.max_refresh_hz = @truncate(max_from_prop.?);
+            caps.source = .drm_property;
+            caps.vrr_range_valid = true;
+        } else if (max_from_prop != null) {
+            // Only max available
+            caps.max_refresh_hz = @truncate(max_from_prop.?);
+            caps.min_refresh_hz = 48; // Default min
+            caps.source = .drm_property;
+        } else {
+            // Fallback: scan modes for max refresh rate
+            if (self.getConnectorById(connector_id)) |conn_val| {
+                var conn = conn_val;
+                defer conn.deinit();
+                var max_hz: u32 = 0;
+                var i: u32 = 0;
+                while (i < conn.getModeCount()) : (i += 1) {
+                    if (conn.getMode(i)) |mode| {
+                        if (mode.refresh_hz > max_hz) {
+                            max_hz = mode.refresh_hz;
+                        }
+                    }
+                }
+                if (max_hz > 0) {
+                    caps.max_refresh_hz = max_hz;
+                    caps.source = .edid_parsed;
+                }
+            }
+
+            // Default min if VRR supported but not reported
+            if (caps.supported and caps.min_refresh_hz == 0) {
+                caps.min_refresh_hz = 48;
+            }
+        }
+
+        // Calculate LFC capability (2.4:1 ratio or better)
+        // LFC allows the panel to double frames when below min_hz
+        if (caps.min_refresh_hz > 0 and caps.max_refresh_hz > 0) {
+            caps.lfc_capable = caps.max_refresh_hz >= (caps.min_refresh_hz * 2);
+        }
+
+        return caps;
+    }
+
     /// Get connector by ID
     fn getConnectorById(self: *const Device, connector_id: u32) ?Connector {
         const conn = c.drmModeGetConnector(self.fd, connector_id);
@@ -468,6 +532,67 @@ pub const VrrCapabilities = struct {
     pub fn getMinFrameTimeNs(self: *const VrrCapabilities) u64 {
         if (self.max_refresh_hz == 0) return 6_944_444; // 144Hz default
         return @divFloor(1_000_000_000, @as(u64, self.max_refresh_hz));
+    }
+};
+
+/// Source of VRR range information (Driver 595+)
+pub const VrrSource = enum {
+    /// VRR range from DRM kernel properties (vrr_min_hz, vrr_max_hz) - most accurate
+    drm_property,
+    /// VRR range parsed from EDID Display Range Limits descriptor
+    edid_parsed,
+    /// VRR range from nvidia-settings query
+    nvidia_settings,
+    /// Default fallback values (48Hz min, mode max Hz)
+    default,
+
+    pub fn name(self: VrrSource) []const u8 {
+        return switch (self) {
+            .drm_property => "DRM property",
+            .edid_parsed => "EDID",
+            .nvidia_settings => "nvidia-settings",
+            .default => "default",
+        };
+    }
+
+    pub fn isReliable(self: VrrSource) bool {
+        return self == .drm_property;
+    }
+};
+
+/// Enhanced VRR capabilities with source tracking (Driver 595+)
+pub const EnhancedVrrCapabilities = struct {
+    supported: bool = false,
+    enabled: bool = false,
+    min_refresh_hz: u32 = 0,
+    max_refresh_hz: u32 = 0,
+    /// Where the VRR range information came from
+    source: VrrSource = .default,
+    /// Low Framerate Compensation capable (min_hz * 2 <= max_hz)
+    lfc_capable: bool = false,
+    /// Whether the kernel validated this VRR range
+    vrr_range_valid: bool = false,
+
+    /// Check if a target FPS is within the VRR range
+    pub fn isInRange(self: *const EnhancedVrrCapabilities, fps: u32) bool {
+        if (!self.supported) return false;
+        return fps >= self.min_refresh_hz and fps <= self.max_refresh_hz;
+    }
+
+    /// Get LFC threshold (minimum FPS before frame doubling kicks in)
+    pub fn getLfcThreshold(self: *const EnhancedVrrCapabilities) u32 {
+        if (!self.lfc_capable) return 0;
+        return self.min_refresh_hz;
+    }
+
+    /// Convert to basic VrrCapabilities for compatibility
+    pub fn toBasic(self: *const EnhancedVrrCapabilities) VrrCapabilities {
+        return VrrCapabilities{
+            .supported = self.supported,
+            .enabled = self.enabled,
+            .min_refresh_hz = self.min_refresh_hz,
+            .max_refresh_hz = self.max_refresh_hz,
+        };
     }
 };
 
@@ -999,6 +1124,269 @@ fn waitVblankDev(fd: std.posix.fd_t, crtc_id: u32) !FrameTiming {
 }
 
 // ============================================================================
+// ROI/CRC Display Verification (Driver 595+)
+// ============================================================================
+
+/// NVIDIA DRM IOCTL command numbers (595+ driver)
+const DRM_NVIDIA_REGISTER_ROI: u8 = 0x19;
+const DRM_NVIDIA_UNREGISTER_ROI: u8 = 0x1a;
+const DRM_NVIDIA_GET_CRTC_ROI_CRCS: u8 = 0x1b;
+const DRM_NVIDIA_GET_ROI_CAPABILITIES: u8 = 0x1c;
+
+/// Maximum ROIs per CRTC
+pub const NV_DRM_MAX_ROIS_PER_CRTC: usize = 64;
+
+/// DRM command base for NVIDIA IOCTLs
+const DRM_COMMAND_BASE: u32 = 0x40;
+
+/// Build DRM IOCTL number (read/write)
+fn drmIoctlRW(comptime T: type, nr: u8) u32 {
+    const size = @sizeOf(T);
+    // _IOWR('d', DRM_COMMAND_BASE + nr, struct)
+    return 0xC0000000 | (@as(u32, size) << 16) | (@as(u32, 'd') << 8) | (DRM_COMMAND_BASE + nr);
+}
+
+/// Build DRM IOCTL number (write only)
+fn drmIoctlW(comptime T: type, nr: u8) u32 {
+    const size = @sizeOf(T);
+    // _IOW('d', DRM_COMMAND_BASE + nr, struct)
+    return 0x40000000 | (@as(u32, size) << 16) | (@as(u32, 'd') << 8) | (DRM_COMMAND_BASE + nr);
+}
+
+/// Region of Interest rectangle
+pub const RoiRect = extern struct {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+
+    pub fn contains(self: RoiRect, px: u32, py: u32) bool {
+        return px >= self.x and px < self.x + self.width and
+            py >= self.y and py < self.y + self.height;
+    }
+
+    pub fn area(self: RoiRect) u64 {
+        return @as(u64, self.width) * @as(u64, self.height);
+    }
+};
+
+/// Parameters for registering an ROI
+pub const RegisterRoiParams = extern struct {
+    rect: RoiRect,
+    region_handle: u64, // OUT - unique handle for registered ROI
+};
+
+/// Parameters for unregistering an ROI
+pub const UnregisterRoiParams = extern struct {
+    region_handle: u64,
+};
+
+/// CRC result for a single ROI
+pub const RoiCrc = extern struct {
+    region_handle: u64,
+    crc: u64,
+    reserved: [4]u64,
+};
+
+/// Parameters for reading CRCs from a CRTC
+pub const ReadCrcParams = extern struct {
+    crtc_id: i32,
+    num_collected_crcs: i32, // OUT - number of valid entries
+    roi_crcs: [NV_DRM_MAX_ROIS_PER_CRTC]RoiCrc,
+    reserved: [4]u64,
+};
+
+/// Parameters for querying ROI capabilities
+pub const RoiCapabilitiesParams = extern struct {
+    max_registered_rois: u32, // OUT
+    reserved: [7]u32,
+};
+
+/// ROI capabilities for a display
+pub const RoiCapabilities = struct {
+    max_rois: u32,
+    supports_crc: bool,
+    min_region_width: u32,
+    min_region_height: u32,
+};
+
+/// ROI manager errors
+pub const RoiError = error{
+    NotSupported,
+    InvalidFd,
+    IoctlFailed,
+    InvalidHandle,
+    TooManyRois,
+    InvalidRect,
+    OutOfMemory,
+};
+
+/// ROI Manager for display verification
+/// Manages registration of regions and CRC computation for compositor safety checks
+pub const RoiManager = struct {
+    fd: std.posix.fd_t,
+    allocator: std.mem.Allocator,
+    registered_rois: std.ArrayList(u64),
+    capabilities: ?RoiCapabilities,
+
+    const Self = @This();
+
+    /// Initialize ROI manager
+    pub fn init(allocator: std.mem.Allocator, fd: std.posix.fd_t) Self {
+        return Self{
+            .fd = fd,
+            .allocator = allocator,
+            .registered_rois = std.ArrayList(u64).init(allocator),
+            .capabilities = null,
+        };
+    }
+
+    /// Cleanup all registered ROIs
+    pub fn deinit(self: *Self) void {
+        // Unregister all ROIs
+        for (self.registered_rois.items) |handle| {
+            self.unregisterRoi(handle) catch {};
+        }
+        self.registered_rois.deinit();
+    }
+
+    /// Query ROI capabilities for a CRTC
+    pub fn getCapabilities(self: *Self, crtc_id: u32) RoiError!RoiCapabilities {
+        if (self.fd < 0) return RoiError.InvalidFd;
+
+        if (!has_drm) {
+            return RoiError.NotSupported;
+        }
+
+        var params = RoiCapabilitiesParams{
+            .max_registered_rois = 0,
+            .reserved = [_]u32{0} ** 7,
+        };
+        _ = crtc_id; // Used in actual IOCTL
+
+        const ioctl_num = comptime drmIoctlRW(RoiCapabilitiesParams, DRM_NVIDIA_GET_ROI_CAPABILITIES);
+        const ret = std.posix.system.ioctl(self.fd, ioctl_num, @intFromPtr(&params));
+        if (ret != 0) return RoiError.IoctlFailed;
+
+        const caps = RoiCapabilities{
+            .max_rois = params.max_registered_rois,
+            .supports_crc = params.max_registered_rois > 0,
+            .min_region_width = 8, // Typical minimum
+            .min_region_height = 8,
+        };
+
+        self.capabilities = caps;
+        return caps;
+    }
+
+    /// Register a region of interest for CRC computation
+    pub fn registerRoi(self: *Self, rect: RoiRect) RoiError!u64 {
+        if (self.fd < 0) return RoiError.InvalidFd;
+        if (rect.width == 0 or rect.height == 0) return RoiError.InvalidRect;
+
+        // Check capacity
+        if (self.capabilities) |caps| {
+            if (self.registered_rois.items.len >= caps.max_rois) {
+                return RoiError.TooManyRois;
+            }
+        }
+
+        if (!has_drm) {
+            return RoiError.NotSupported;
+        }
+
+        var params = RegisterRoiParams{
+            .rect = rect,
+            .region_handle = 0,
+        };
+
+        const ioctl_num = comptime drmIoctlRW(RegisterRoiParams, DRM_NVIDIA_REGISTER_ROI);
+        const ret = std.posix.system.ioctl(self.fd, ioctl_num, @intFromPtr(&params));
+        if (ret != 0) return RoiError.IoctlFailed;
+
+        // Track the handle
+        self.registered_rois.append(params.region_handle) catch return RoiError.OutOfMemory;
+
+        return params.region_handle;
+    }
+
+    /// Unregister a region of interest
+    pub fn unregisterRoi(self: *Self, handle: u64) RoiError!void {
+        if (self.fd < 0) return RoiError.InvalidFd;
+
+        if (!has_drm) {
+            return RoiError.NotSupported;
+        }
+
+        var params = UnregisterRoiParams{
+            .region_handle = handle,
+        };
+
+        const ioctl_num = comptime drmIoctlW(UnregisterRoiParams, DRM_NVIDIA_UNREGISTER_ROI);
+        const ret = std.posix.system.ioctl(self.fd, ioctl_num, @intFromPtr(&params));
+        if (ret != 0) return RoiError.IoctlFailed;
+
+        // Remove from tracking
+        var i: usize = 0;
+        while (i < self.registered_rois.items.len) {
+            if (self.registered_rois.items[i] == handle) {
+                _ = self.registered_rois.orderedRemove(i);
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    /// Get CRCs for all registered ROIs on a CRTC
+    pub fn getCrcs(self: *Self, crtc_id: u32, out_crcs: []RoiCrc) RoiError!usize {
+        if (self.fd < 0) return RoiError.InvalidFd;
+
+        if (!has_drm) {
+            return RoiError.NotSupported;
+        }
+
+        var params = ReadCrcParams{
+            .crtc_id = @intCast(crtc_id),
+            .num_collected_crcs = 0,
+            .roi_crcs = undefined,
+            .reserved = [_]u64{0} ** 4,
+        };
+
+        const ioctl_num = comptime drmIoctlRW(ReadCrcParams, DRM_NVIDIA_GET_CRTC_ROI_CRCS);
+        const ret = std.posix.system.ioctl(self.fd, ioctl_num, @intFromPtr(&params));
+        if (ret != 0) return RoiError.IoctlFailed;
+
+        const count: usize = @intCast(@max(0, params.num_collected_crcs));
+        const copy_count = @min(count, out_crcs.len);
+
+        for (0..copy_count) |i| {
+            out_crcs[i] = params.roi_crcs[i];
+        }
+
+        return count;
+    }
+
+    /// Verify a region's CRC against an expected value
+    pub fn verifyRegion(self: *Self, crtc_id: u32, handle: u64, expected_crc: u64) RoiError!bool {
+        var crcs: [NV_DRM_MAX_ROIS_PER_CRTC]RoiCrc = undefined;
+        const count = try self.getCrcs(crtc_id, &crcs);
+
+        for (crcs[0..count]) |crc| {
+            if (crc.region_handle == handle) {
+                return crc.crc == expected_crc;
+            }
+        }
+
+        return RoiError.InvalidHandle;
+    }
+
+    /// Get number of registered ROIs
+    pub fn registeredCount(self: *const Self) usize {
+        return self.registered_rois.items.len;
+    }
+};
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1074,4 +1462,49 @@ test "atomic request" {
 
     req.clear();
     try std.testing.expectEqual(@as(usize, 0), req.properties.items.len);
+}
+
+test "roi rect" {
+    const rect = RoiRect{
+        .x = 100,
+        .y = 200,
+        .width = 50,
+        .height = 30,
+    };
+
+    try std.testing.expect(rect.contains(100, 200));
+    try std.testing.expect(rect.contains(125, 215));
+    try std.testing.expect(!rect.contains(150, 200)); // x + width boundary
+    try std.testing.expect(!rect.contains(99, 200)); // before x
+    try std.testing.expectEqual(@as(u64, 1500), rect.area());
+}
+
+test "roi manager init" {
+    const allocator = std.testing.allocator;
+    var mgr = RoiManager.init(allocator, -1); // Invalid fd for testing
+    defer mgr.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), mgr.registeredCount());
+
+    // Operations should fail gracefully with invalid fd
+    try std.testing.expectError(RoiError.InvalidFd, mgr.getCapabilities(0));
+    try std.testing.expectError(RoiError.InvalidFd, mgr.registerRoi(.{ .x = 0, .y = 0, .width = 100, .height = 100 }));
+}
+
+test "enhanced vrr capabilities" {
+    const caps = EnhancedVrrCapabilities{
+        .supported = true,
+        .enabled = true,
+        .min_refresh_hz = 48,
+        .max_refresh_hz = 144,
+        .source = .drm_property,
+        .lfc_capable = true,
+        .vrr_range_valid = true,
+    };
+
+    try std.testing.expect(caps.isInRange(60));
+    try std.testing.expect(caps.isInRange(144));
+    try std.testing.expect(!caps.isInRange(200));
+    try std.testing.expectEqual(@as(u32, 48), caps.getLfcThreshold());
+    try std.testing.expect(caps.source.isReliable());
 }

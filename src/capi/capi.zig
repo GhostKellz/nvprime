@@ -8,6 +8,7 @@ pub const nvpower_capi = @import("nvpower_capi.zig");
 pub const nvdisplay_capi = @import("nvdisplay_capi.zig");
 pub const nvdlss_capi = @import("nvdlss_capi.zig");
 pub const nvruntime_capi = @import("nvruntime_capi.zig");
+pub const nv595_capi = @import("nv595_capi.zig");
 
 // Re-export types - nvcaps
 pub const NvArchitecture = nvcaps_capi.NvArchitecture;

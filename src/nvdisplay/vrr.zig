@@ -2,6 +2,8 @@
 //!
 //! Generic VRR control (FreeSync, Adaptive Sync) beyond G-Sync specific features.
 //! Uses DRM sysfs for capability detection and nvidia-settings for control.
+//!
+//! Driver 595+ provides enhanced VRR range detection via DRM properties.
 
 const std = @import("std");
 const Io = std.Io;
@@ -9,6 +11,9 @@ const Dir = Io.Dir;
 const File = Io.File;
 const mem = std.mem;
 const posix = std.posix;
+
+// Re-export VrrSource from DRM module for tracking detection method
+pub const VrrSource = @import("../nvruntime/primetime/drm.zig").VrrSource;
 
 /// VRR technology type
 pub const VrrType = enum {
@@ -40,6 +45,8 @@ pub const VrrState = struct {
     lfc_supported: bool, // Low Framerate Compensation
     lfc_active: bool,
     vrr_in_use: bool, // Currently varying refresh rate
+    // Driver 595+ source tracking
+    source: VrrSource = .default,
 
     pub fn range(self: VrrState) u32 {
         return self.max_hz - self.min_hz;
@@ -51,6 +58,11 @@ pub const VrrState = struct {
 
     pub fn lfcThreshold(self: VrrState) u32 {
         return self.min_hz;
+    }
+
+    /// Check if VRR range info is from a reliable source (DRM property)
+    pub fn isRangeReliable(self: VrrState) bool {
+        return self.source.isReliable();
     }
 };
 
@@ -67,7 +79,7 @@ fn readSysfs(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
     const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0].ptr);
 
     const fd = posix.openatZ(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer posix.close(fd);
+    defer std.Io.Threaded.closeFd(fd);
 
     var buf: [256]u8 = undefined;
     const len = posix.read(fd, &buf) catch return null;
@@ -84,7 +96,7 @@ fn readSysfsBinary(allocator: mem.Allocator, path: []const u8) ?[]const u8 {
     const path_z: [*:0]const u8 = @ptrCast(path_buf[0..path.len :0].ptr);
 
     const fd = posix.openatZ(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer posix.close(fd);
+    defer std.Io.Threaded.closeFd(fd);
 
     var buf: [512]u8 = undefined;
     const len = posix.read(fd, &buf) catch return null;
@@ -216,12 +228,49 @@ pub fn getState(display_name: []const u8) !VrrState {
         }
     }
 
-    // Read EDID for VRR range
-    const edid_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/edid", .{ DRM_SYS_DIR, found_card.? }) catch "";
-    const edid = if (edid_path.len > 0) readSysfsBinary(allocator, edid_path) else null;
-    defer if (edid) |e| allocator.free(e);
+    // Try DRM properties first (Driver 595+)
+    var vrr_range = VrrRange{ .min = 48, .max = 60 };
+    var source: VrrSource = .default;
 
-    const vrr_range = if (edid) |e| parseEdidVrrRange(e) else VrrRange{ .min = 48, .max = 60 };
+    // Read vrr_min_hz from sysfs (DRM property exposed by 595+ driver)
+    const vrr_min_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/vrr_min_hz", .{ DRM_SYS_DIR, found_card.? }) catch "";
+    var min_from_drm: ?u32 = null;
+    if (vrr_min_path.len > 0) {
+        if (readSysfs(allocator, vrr_min_path)) |v| {
+            defer allocator.free(v);
+            min_from_drm = std.fmt.parseInt(u32, mem.trim(u8, v, "\n \t\r"), 10) catch null;
+        }
+    }
+
+    // Read vrr_max_hz from sysfs (DRM property exposed by 595+ driver)
+    const vrr_max_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/vrr_max_hz", .{ DRM_SYS_DIR, found_card.? }) catch "";
+    var max_from_drm: ?u32 = null;
+    if (vrr_max_path.len > 0) {
+        if (readSysfs(allocator, vrr_max_path)) |v| {
+            defer allocator.free(v);
+            max_from_drm = std.fmt.parseInt(u32, mem.trim(u8, v, "\n \t\r"), 10) catch null;
+        }
+    }
+
+    // Use DRM properties if available (most accurate)
+    if (min_from_drm != null and max_from_drm != null) {
+        vrr_range.min = min_from_drm.?;
+        vrr_range.max = max_from_drm.?;
+        source = .drm_property;
+    } else if (max_from_drm != null) {
+        vrr_range.max = max_from_drm.?;
+        source = .drm_property;
+    } else {
+        // Fallback to EDID parsing
+        const edid_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/edid", .{ DRM_SYS_DIR, found_card.? }) catch "";
+        const edid = if (edid_path.len > 0) readSysfsBinary(allocator, edid_path) else null;
+        defer if (edid) |e| allocator.free(e);
+
+        if (edid) |e| {
+            vrr_range = parseEdidVrrRange(e);
+            source = .edid_parsed;
+        }
+    }
 
     // Query nvidia-settings for current state
     const nv_state = queryNvidiaSettingsVrr();
@@ -236,7 +285,12 @@ pub fn getState(display_name: []const u8) !VrrState {
         vrr_type = .vesa_adaptive_sync;
     }
 
-    // LFC is supported when VRR range is at least 2.4:1
+    // Update source to nvidia_settings if that's how we detected the type
+    if (source == .default and (nv_state.gsync_enabled or nv_state.gsync_compat)) {
+        source = .nvidia_settings;
+    }
+
+    // LFC is supported when VRR range is at least 2:1 (conservative)
     const lfc_supported = vrr_capable and (vrr_range.max >= vrr_range.min * 2);
 
     return VrrState{
@@ -248,6 +302,7 @@ pub fn getState(display_name: []const u8) !VrrState {
         .lfc_supported = lfc_supported,
         .lfc_active = false, // Would need real-time monitoring
         .vrr_in_use = nv_state.gsync_enabled or nv_state.gsync_compat,
+        .source = source,
     };
 }
 
@@ -461,8 +516,10 @@ test "vrr state" {
         .lfc_supported = true,
         .lfc_active = false,
         .vrr_in_use = true,
+        .source = .drm_property,
     };
     try std.testing.expectEqual(@as(u32, 96), state.range());
     try std.testing.expect(state.inVrrRange(100));
     try std.testing.expect(!state.inVrrRange(30));
+    try std.testing.expect(state.isRangeReliable());
 }

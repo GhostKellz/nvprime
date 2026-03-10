@@ -44,6 +44,21 @@ const c = if (use_nvml) @cImport({
     pub const NVML_PSTATE_3: i32 = 3;
     pub const NVML_PSTATE_8: i32 = 8;
     pub const NVML_PSTATE_15: i32 = 15;
+    // ECC constants
+    pub const NVML_MEMORY_ERROR_TYPE_CORRECTED: i32 = 0;
+    pub const NVML_MEMORY_ERROR_TYPE_UNCORRECTED: i32 = 1;
+    pub const NVML_VOLATILE_ECC: i32 = 0;
+    pub const NVML_AGGREGATE_ECC: i32 = 1;
+    // Stub functions for ECC
+    pub fn nvmlDeviceGetEccMode(_: *anyopaque, _: *c_uint, _: *c_uint) i32 {
+        return -1;
+    }
+    pub fn nvmlDeviceGetTotalEccErrors(_: *anyopaque, _: i32, _: i32, _: *c_ulonglong) i32 {
+        return -1;
+    }
+    pub fn nvmlDeviceGetRetiredPages(_: *anyopaque, _: c_uint, _: *c_uint, _: ?*anyopaque) i32 {
+        return -1;
+    }
 };
 
 pub const NvmlError = error{
@@ -308,9 +323,145 @@ pub fn isFeatureSupported(device: Device, feature: FeatureQuery) bool {
     }
 }
 
+// ============================================================================
+// ECC Memory Error Detection (Driver 595+)
+// ============================================================================
+
+/// ECC error counts for a device
+pub const EccErrorCounts = struct {
+    correctable: u64,
+    uncorrectable: u64,
+};
+
+/// ECC counter type for querying specific error categories
+pub const EccCounterType = enum(c_int) {
+    volatile_ecc = 0, // Errors since last driver load
+    aggregate_ecc = 1, // Lifetime accumulated errors
+};
+
+/// ECC memory location type
+pub const EccMemoryType = enum(c_int) {
+    device_memory = 0, // GPU device memory (VRAM)
+    register_file = 1, // Register file
+    l1_cache = 2, // L1 cache
+    l2_cache = 3, // L2 cache
+    texture_memory = 4, // Texture memory (deprecated, same as device)
+    cbu = 5, // CBU (Compute Buffer Unit)
+    sram = 6, // SRAM
+};
+
+/// Check if ECC is enabled on the device
+pub fn isEccEnabled(device: Device) NvmlError!bool {
+    if (!use_nvml) return error.NvmlNotAvailable;
+    var current: c_uint = 0;
+    var pending: c_uint = 0;
+    const ret = c.nvmlDeviceGetEccMode(device, &current, &pending);
+    if (ret != c.NVML_SUCCESS) return error.NotSupported;
+    return current != 0;
+}
+
+/// Get ECC error counts for device memory (volatile - since driver load)
+pub fn getEccErrorCounts(device: Device) NvmlError!EccErrorCounts {
+    if (!use_nvml) return error.NvmlNotAvailable;
+
+    var correctable: c_ulonglong = 0;
+    var uncorrectable: c_ulonglong = 0;
+
+    // Get total volatile ECC errors (all memory types combined)
+    const ret_corr = c.nvmlDeviceGetTotalEccErrors(
+        device,
+        c.NVML_MEMORY_ERROR_TYPE_CORRECTED,
+        c.NVML_VOLATILE_ECC,
+        &correctable,
+    );
+    const ret_uncorr = c.nvmlDeviceGetTotalEccErrors(
+        device,
+        c.NVML_MEMORY_ERROR_TYPE_UNCORRECTED,
+        c.NVML_VOLATILE_ECC,
+        &uncorrectable,
+    );
+
+    // If both fail, ECC is not supported
+    if (ret_corr != c.NVML_SUCCESS and ret_uncorr != c.NVML_SUCCESS) {
+        return error.NotSupported;
+    }
+
+    return EccErrorCounts{
+        .correctable = if (ret_corr == c.NVML_SUCCESS) correctable else 0,
+        .uncorrectable = if (ret_uncorr == c.NVML_SUCCESS) uncorrectable else 0,
+    };
+}
+
+/// Get aggregate (lifetime) ECC error counts
+pub fn getAggregateEccErrorCounts(device: Device) NvmlError!EccErrorCounts {
+    if (!use_nvml) return error.NvmlNotAvailable;
+
+    var correctable: c_ulonglong = 0;
+    var uncorrectable: c_ulonglong = 0;
+
+    const ret_corr = c.nvmlDeviceGetTotalEccErrors(
+        device,
+        c.NVML_MEMORY_ERROR_TYPE_CORRECTED,
+        c.NVML_AGGREGATE_ECC,
+        &correctable,
+    );
+    const ret_uncorr = c.nvmlDeviceGetTotalEccErrors(
+        device,
+        c.NVML_MEMORY_ERROR_TYPE_UNCORRECTED,
+        c.NVML_AGGREGATE_ECC,
+        &uncorrectable,
+    );
+
+    if (ret_corr != c.NVML_SUCCESS and ret_uncorr != c.NVML_SUCCESS) {
+        return error.NotSupported;
+    }
+
+    return EccErrorCounts{
+        .correctable = if (ret_corr == c.NVML_SUCCESS) correctable else 0,
+        .uncorrectable = if (ret_uncorr == c.NVML_SUCCESS) uncorrectable else 0,
+    };
+}
+
+/// Check if device has any memory errors (volatile)
+pub fn hasMemoryErrors(device: Device) NvmlError!bool {
+    const counts = getEccErrorCounts(device) catch return false;
+    return counts.correctable > 0 or counts.uncorrectable > 0;
+}
+
+/// Check if device has uncorrectable memory errors (critical)
+pub fn hasUncorrectableErrors(device: Device) NvmlError!bool {
+    const counts = getEccErrorCounts(device) catch return false;
+    return counts.uncorrectable > 0;
+}
+
+/// Get count of retired pages due to memory errors
+pub fn getRetiredPages(device: Device) NvmlError!struct { due_to_multiple_single_bit: u32, due_to_double_bit: u32 } {
+    if (!use_nvml) return error.NvmlNotAvailable;
+
+    var single_bit_count: c_uint = 0;
+    var double_bit_count: c_uint = 0;
+
+    // NVML_PAGE_RETIREMENT_CAUSE_MULTIPLE_SINGLE_BIT_ECC_ERRORS = 0
+    // NVML_PAGE_RETIREMENT_CAUSE_DOUBLE_BIT_ECC_ERROR = 1
+    _ = c.nvmlDeviceGetRetiredPages(device, 0, &single_bit_count, null);
+    _ = c.nvmlDeviceGetRetiredPages(device, 1, &double_bit_count, null);
+
+    return .{
+        .due_to_multiple_single_bit = single_bit_count,
+        .due_to_double_bit = double_bit_count,
+    };
+}
+
 test "nvml types" {
     // Compile-time verification that types are correctly imported
     _ = Device;
     _ = Memory;
     _ = Utilization;
+}
+
+test "ecc types" {
+    // Compile-time verification of ECC types
+    _ = EccErrorCounts;
+    _ = EccCounterType;
+    _ = EccMemoryType;
 }

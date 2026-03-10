@@ -274,6 +274,152 @@ uint32_t nvprime_efficiency_power_percent(NvEfficiencyMode mode);
 uint32_t nvprime_efficiency_thermal_target(NvEfficiencyMode mode);
 
 /* ============================================================================
+ * Memory Health (Driver 595+)
+ * ============================================================================ */
+
+typedef enum {
+    NV_MEM_HEALTHY = 0,
+    NV_MEM_WARNING = 1,
+    NV_MEM_DEGRADED = 2,
+    NV_MEM_FAILING = 3,
+} NvMemoryHealth;
+
+typedef struct {
+    NvMemoryHealth health;
+    uint64_t correctable_errors;
+    uint64_t uncorrectable_errors;
+    uint64_t lifetime_correctable;
+    uint64_t lifetime_uncorrectable;
+    bool ecc_enabled;
+    uint32_t retired_pages;
+} NvMemoryStatus;
+
+/** Get memory health status */
+NvMemoryHealth nvprime_memory_get_health(uint32_t index);
+
+/** Check if GPU has memory errors */
+bool nvprime_memory_has_errors(uint32_t index);
+
+/** Check if GPU has critical (uncorrectable) errors */
+bool nvprime_memory_has_critical_errors(uint32_t index);
+
+/** Check if ECC is enabled */
+bool nvprime_memory_ecc_enabled(uint32_t index);
+
+/** Get full memory status */
+int nvprime_memory_get_status(uint32_t index, NvMemoryStatus* out_status);
+
+/** Get ECC error counts */
+int nvprime_memory_get_error_counts(uint32_t index, uint64_t* correctable, uint64_t* uncorrectable);
+
+/* ============================================================================
+ * ROI/CRC Display Verification (Driver 595+)
+ * ============================================================================ */
+
+typedef struct {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} NvRoiRect;
+
+typedef struct {
+    uint64_t region_handle;
+    uint64_t crc;
+} NvRoiCrc;
+
+typedef struct {
+    uint32_t max_rois;
+    bool supports_crc;
+    uint32_t min_region_width;
+    uint32_t min_region_height;
+} NvRoiCapabilities;
+
+/** Get ROI capabilities for a CRTC */
+int nvprime_roi_get_capabilities(int drm_fd, uint32_t crtc_id, NvRoiCapabilities* out_caps);
+
+/** Register a region of interest */
+int nvprime_roi_register(int drm_fd, const NvRoiRect* rect, uint64_t* out_handle);
+
+/** Unregister a region of interest */
+int nvprime_roi_unregister(int drm_fd, uint64_t handle);
+
+/** Get CRCs for all registered ROIs on a CRTC */
+int nvprime_roi_get_crcs(int drm_fd, uint32_t crtc_id, NvRoiCrc* out_crcs, uint32_t max_count);
+
+/** Verify a region's CRC matches expected value */
+bool nvprime_roi_verify(int drm_fd, uint32_t crtc_id, uint64_t handle, uint64_t expected_crc);
+
+/* ============================================================================
+ * VRR Source Tracking (Driver 595+)
+ * ============================================================================ */
+
+typedef enum {
+    NV_VRR_SOURCE_DRM_PROPERTY = 0,  /**< From DRM vrr_min_hz/vrr_max_hz properties (most reliable) */
+    NV_VRR_SOURCE_EDID_PARSED = 1,   /**< Parsed from EDID Display Range Limits */
+    NV_VRR_SOURCE_NVIDIA_SETTINGS = 2, /**< From nvidia-settings query */
+    NV_VRR_SOURCE_DEFAULT = 3,       /**< Default fallback values */
+} NvVrrSource;
+
+typedef struct {
+    uint32_t min_hz;
+    uint32_t max_hz;
+    NvVrrSource source;
+    bool lfc_capable;
+    bool range_reliable;  /**< True if source is DRM property */
+} NvVrrRange;
+
+/** Get VRR range with source information */
+int nvprime_vrr_get_range(const char* display_name, NvVrrRange* out_range);
+
+/** Check if VRR range is from a reliable source (DRM property) */
+bool nvprime_vrr_range_reliable(const char* display_name);
+
+/* ============================================================================
+ * DP Link Training (Driver 595+)
+ * ============================================================================ */
+
+typedef enum {
+    NV_DP_LT_IDLE = 0,
+    NV_DP_LT_IN_PROGRESS = 1,
+    NV_DP_LT_COMPLETED = 2,
+    NV_DP_LT_FAILED = 3,
+} NvDpLinkTrainingState;
+
+typedef enum {
+    NV_DP_RATE_UNKNOWN = 0,
+    NV_DP_RATE_RBR = 0x06,      /**< 1.62 Gbps */
+    NV_DP_RATE_HBR = 0x0a,      /**< 2.7 Gbps */
+    NV_DP_RATE_HBR2 = 0x14,     /**< 5.4 Gbps */
+    NV_DP_RATE_HBR3 = 0x1e,     /**< 8.1 Gbps */
+    NV_DP_RATE_UHBR10 = 0x01,   /**< 10 Gbps (DP 2.0) */
+    NV_DP_RATE_UHBR13_5 = 0x04, /**< 13.5 Gbps (DP 2.0) */
+    NV_DP_RATE_UHBR20 = 0x02,   /**< 20 Gbps (DP 2.0) */
+} NvDpLinkRate;
+
+typedef struct {
+    uint32_t display_id;
+    NvDpLinkRate link_rate;
+    uint8_t lane_count;
+    NvDpLinkTrainingState training_state;
+    bool fec_enabled;
+    bool link_stable;
+    float bandwidth_gbps;  /**< Total bandwidth (rate * lanes) */
+} NvDpLinkStatus;
+
+/** Check if DP link training is in progress */
+bool nvprime_dp_is_training(uint32_t display_id);
+
+/** Get DP link status */
+int nvprime_dp_get_status(uint32_t display_id, NvDpLinkStatus* out_status);
+
+/** Get link rate bandwidth in Gbps */
+float nvprime_dp_rate_bandwidth(NvDpLinkRate rate);
+
+/** Check if rate is UHBR (DP 2.0) */
+bool nvprime_dp_rate_is_uhbr(NvDpLinkRate rate);
+
+/* ============================================================================
  * Convenience aliases
  * ============================================================================ */
 
