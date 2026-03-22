@@ -156,7 +156,7 @@ pub const Layout = struct {
 
 /// Run xrandr command and return output
 fn runXrandr(allocator: mem.Allocator, args: []const []const u8) ![]const u8 {
-    var argv = std.ArrayListUnmanaged([]const u8){};
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(allocator);
 
     try argv.append(allocator, "xrandr");
@@ -453,7 +453,7 @@ pub fn getLayout() !Layout {
 fn runXrandrCmd(args: []const []const u8) !void {
     const allocator = std.heap.page_allocator;
 
-    var argv = std.ArrayListUnmanaged([]const u8){};
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(allocator);
 
     try argv.append(allocator, "xrandr");
@@ -675,6 +675,6 @@ pub fn configureSurround(config: SurroundConfig) !void {
 }
 
 test "layout" {
-    var layout = Layout.init();
+    const layout = Layout.init();
     try std.testing.expectEqual(@as(usize, 0), layout.entry_count);
 }

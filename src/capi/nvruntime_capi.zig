@@ -130,7 +130,7 @@ pub const NvPrimetimeVrrConfig = extern struct {
 pub const NvCompositor = opaque {};
 
 // Global allocator for C API
-var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+var gpa: std.heap.DebugAllocator(.{}) = .init;
 
 // ============================================================================
 // C ABI Exports - Compositor Lifecycle

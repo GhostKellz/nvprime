@@ -25,7 +25,7 @@
     .fingerprint = 0x9f7fe50e2c3a487, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0-dev.2736+3b515fbed",
+    .minimum_zig_version = "0.16.0-dev.2962+08416b44f",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -33,32 +33,32 @@
     // internet connectivity.
     .dependencies = .{
         .nvvk = .{
-            .url = "https://github.com/ghostkellz/nvvk/archive/main.tar.gz",
-            .hash = "nvvk-0.4.4-mPNRRrmcBgBhip2D8Hm0jCZeapJLMBGnLQ8el4R9WQkw",
+            .url = "git+https://github.com/ghostkellz/nvvk?ref=refs/tags/v0.4.5#7e915d05275785461cc92d1ca7db2c25ea36b017",
+            .hash = "nvvk-0.4.5-mPNRRkWbBgBe39N4mAsQ1Y5M4wl-ljYtyJXfArUskPJ8",
         },
         .nvhud = .{
-            .url = "https://github.com/ghostkellz/nvhud/archive/main.tar.gz",
-            .hash = "nvhud-0.4.3-UbzfUbcFBABaLnx2-na1stMM-EvD75y-8eW55JbbeGzm",
+            .url = "git+https://github.com/ghostkellz/nvhud?ref=refs/tags/v0.4.6#b80e37e7ede9425f95f45cfc9eea259f860a8345",
+            .hash = "nvhud-0.4.6-UbzfUUcGBADVjOMFeXZ2W3k1FyTzx6Lk1qeNun9A2n_q",
         },
         .nvlatency = .{
-            .url = "https://github.com/ghostkellz/nvlatency/archive/main.tar.gz",
-            .hash = "nvlatency-0.2.3-ELEK3pgEAQA1Qq_0vSF5O_t3KFBHhCKUNc1wvn40A_tK",
+            .url = "git+https://github.com/ghostkellz/nvlatency?ref=refs/tags/v0.2.4#2e8efb5db65df0c4b5bbde71fb2237ba0d373d6b",
+            .hash = "nvlatency-0.2.4-ELEK3pIEAQChwHpiCEQ4LFgGBtnTBPlstCBOe962DFrd",
         },
         .nvsync = .{
-            .url = "https://github.com/ghostkellz/nvsync/archive/main.tar.gz",
-            .hash = "nvsync-0.2.4-yy7g7dliAwAWU2wHGpOqiq-2hAb2WiczA9St5rbK4nCg",
+            .url = "git+https://github.com/ghostkellz/nvsync?ref=refs/tags/v0.2.5#1599cbe7c9dcd6b7456d9f73c0080d536c6d1725",
+            .hash = "nvsync-0.2.5-yy7g7etjAwB5-DLuwYsb6RenNcUe94Erd-ID7dApb0Fs",
         },
         .nvshader = .{
-            .url = "https://github.com/ghostkellz/nvshader/archive/main.tar.gz",
-            .hash = "nvshader-0.1.3-k-Y2SmFjAwCZkXkRkDGZKbg0SNzEk68eADXOq2Y_s9ks",
+            .url = "git+https://github.com/ghostkellz/nvshader?ref=refs/tags/v0.1.4#ace05f141482c1c1ca28340c61af92ba3409b44a",
+            .hash = "nvshader-0.1.4-k-Y2SpFjAwCgbF1OaLgJabJq9joryPvczGiEshrel224",
         },
         .zeus = .{
-            .url = "https://github.com/ghostkellz/zeus/archive/main.tar.gz",
-            .hash = "zeus-0.1.7-h0GTtymHDgDLLA_t17F0w128haYLU8HNki_6YxFtwE51",
+            .url = "git+https://github.com/ghostkellz/zeus?ref=refs/tags/v0.1.8#22ec1e18909b3c1234a1034ac54e21b50e436a95",
+            .hash = "zeus-0.1.8-h0GTt9iaDgD7rJVtU74a3MsyxzbUKGPRX1F8uZnK_c9f",
         },
         .ghostVK = .{
-            .url = "https://github.com/ghostkellz/ghostVK/archive/main.tar.gz",
-            .hash = "ghostVK-0.1.1-bt87R5GYAwDU0RqddcOdams-sqQuDyAvG8AE367PwlgE",
+            .url = "git+https://github.com/ghostkellz/ghostVK?ref=refs/tags/v0.1.2#b823ebdd7dae6c9cffa85fb603b67ce6263008e5",
+            .hash = "ghostVK-0.1.2-bt87R8KfAwBFtg2t5UiVAKRdZyZkzpzmHmw7RLXtpP6b",
         },
     },
     .paths = .{

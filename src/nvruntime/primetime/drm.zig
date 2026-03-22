@@ -839,7 +839,7 @@ pub const DrmBackend = struct {
     pub fn init(allocator: std.mem.Allocator) InitError!Self {
         var self = Self{
             .allocator = allocator,
-            .outputs = .{},
+            .outputs = .empty,
         };
         errdefer self.outputs.deinit(allocator);
 

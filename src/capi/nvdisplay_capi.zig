@@ -7,7 +7,7 @@ const nvprime = @import("nvprime");
 const nvdisplay = nvprime.nvdisplay;
 
 // Global allocator for C API
-var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+var gpa: std.heap.DebugAllocator(.{}) = .init;
 
 /// C-compatible VRR source enum
 pub const NvVrrType = enum(c_int) {
